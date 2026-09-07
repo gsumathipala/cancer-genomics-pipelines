@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+
+# Web interface run directories: patient details, generated reports and run
+# logs. Never commit these -- this repository is code, not clinical data.
+webapp_runs/
+webapp/webapp_runs/
+
+# Pipeline outputs
+*.bam
+*.bai
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+*.fastq
+*.fastq.gz

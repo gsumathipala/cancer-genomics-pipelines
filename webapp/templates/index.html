@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Runs &middot; Cancer DNA Pipeline{% endblock %}
+{% block content %}
+
+<h1>Pipeline runs</h1>
+
+{% if busy %}
+  <p class="note">A run is in progress. New submissions are queued and start
+  when it finishes &mdash; the pipeline is already parallel internally, so
+  running two at once would only contend for the same CPUs and memory.</p>
+{% endif %}
+
+{% if not jobs %}
+  <div class="empty">
+    <p>No runs yet.</p>
+    <p><a class="button" href="{{ url_for('new_run') }}">Start a run</a></p>
+  </div>
+{% else %}
+<table class="grid">
+  <thead>
+    <tr>
+      <th>Started</th><th>Patient / specimen</th><th>Sample</th>
+      <th>Status</th><th>Progress</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for j in jobs %}
+    <tr>
+      <td class="mono small">{{ (j.started or '')[:19].replace('T',' ') or '&mdash;'|safe }}</td>
+      <td>{{ j.patient_id or '—' }}</td>
+      <td class="mono small">{{ j.sample or '—' }}</td>
+      <td><span class="status {{ j.status }}">{{ j.status }}</span></td>
+      <td class="progress-cell">
+        <div class="bar"><span style="width: {{ j.percent }}%"></span></div>
+        <span class="small">{{ j.step }}/{{ j.total_steps or '?' }}</span>
+      </td>
+      <td><a href="{{ url_for('job_view', job_id=j.id) }}">Open</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% endblock %}

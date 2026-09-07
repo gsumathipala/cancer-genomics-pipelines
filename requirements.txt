@@ -1,0 +1,20 @@
+# Python package requirements.
+#
+#   pip install -r requirements.txt
+#
+# SCOPE: this covers the WEB INTERFACE ONLY.
+#
+# The analysis scripts -- fastq_qc_clean.py, align_reads.py,
+# comprehensive_variant_calling.py, pipeline_orchestrator.py and
+# pcgr_report.py -- import nothing outside the Python standard library and
+# will run against a bare Python 3.8+ with this file never installed.
+#
+# They do, however, need the external bioinformatics TOOLS (fastp, bwa-mem2,
+# samtools, GATK, bcftools, SnpEff). Those are not pip packages; install them
+# with conda/mamba via environment.yml, or see install.md.
+#
+# PDF generation deliberately adds no dependency: webapp/pdfwriter.py emits
+# PDF directly using the standard-14 fonts, so reportlab, WeasyPrint and
+# wkhtmltopdf are all unnecessary.
+
+flask>=2.2

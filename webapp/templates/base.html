@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Cancer DNA Pipeline{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('index') }}">Cancer DNA Pipeline</a>
+    <nav>
+      <a href="{{ url_for('index') }}">Runs</a>
+      <a class="primary" href="{{ url_for('new_run') }}">New run</a>
+    </nav>
+  </header>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>
+    Research use only &mdash; not a validated diagnostic system.
+    Patient details are stored in the run directory on this machine and are
+    never passed to the pipeline or written to its logs.
+  </footer>
+</body>
+</html>

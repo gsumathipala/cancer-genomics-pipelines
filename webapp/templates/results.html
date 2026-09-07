@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Results {{ job.id }} &middot; Cancer DNA Pipeline{% endblock %}
+{% block content %}
+
+<h1>Results</h1>
+<p class="small mono">{{ job.id }}</p>
+
+<section class="card">
+  <h2>Report</h2>
+  {% if has_pdf %}
+    <p><a class="button" href="{{ url_for('job_report_download', job_id=job.id) }}">Download PDF report</a></p>
+  {% else %}
+    <p class="hint">No PDF has been generated yet.</p>
+    <form method="post" action="{{ url_for('job_report', job_id=job.id) }}">
+      <button class="button" type="submit">Generate PDF report</button>
+    </form>
+  {% endif %}
+  {% if pcgr.html %}
+    <p><a class="button ghost" href="{{ url_for('job_pcgr', job_id=job.id) }}" target="_blank">
+      Open PCGR interactive report</a></p>
+    <p class="hint">PCGR's own report is the authoritative interpretation;
+    the PDF is a run summary that points at it.</p>
+  {% else %}
+    <p class="hint">PCGR did not run for this analysis, so there are no
+    actionability tiers, TMB or mutational-signature results. Re-run with a
+    PCGR reference bundle to enable it.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Pipeline summary</h2>
+  {% if manifest %}
+  <dl class="kv">
+    <dt>Tumour</dt><dd>{{ manifest.get('tumour') or '—' }}</dd>
+    <dt>Normal</dt><dd>{{ manifest.get('normal') or 'none (tumour-only)' }}</dd>
+    <dt>Reference</dt><dd class="mono small">{{ manifest.get('reference') or '—' }}</dd>
+    <dt>Duration</dt><dd>{{ manifest.get('duration_seconds') or '—' }} s</dd>
+    <dt>Steps completed</dt><dd>{{ (manifest.get('steps_completed') or [])|join(', ') or '—' }}</dd>
+    <dt>Filtered VCF</dt><dd class="mono small">{{ manifest.get('filtered_vcf') or '—' }}</dd>
+    <dt>COSMIC VCF</dt><dd class="mono small">{{ manifest.get('cosmic_vcf') or '—' }}</dd>
+    <dt>Annotated VCF</dt><dd class="mono small">{{ manifest.get('annotated_vcf') or '—' }}</dd>
+  </dl>
+  {% else %}
+    <p class="hint">No pipeline manifest was found in the output directory.
+    That is expected for a dry run, a cancelled run, or one that failed
+    before finishing.</p>
+  {% endif %}
+</section>
+
+{% if manifest.get('vcf_stats') %}
+<section class="card">
+  <h2>Variant statistics</h2>
+  <table class="grid">
+    <tbody>
+    {% for k, v in manifest['vcf_stats'].items() %}
+      <tr><td>{{ k }}</td><td class="mono">{{ v }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<p><a href="{{ url_for('job_view', job_id=job.id) }}">&larr; Back to run</a></p>
+
+{% endblock %}

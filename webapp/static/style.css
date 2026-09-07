@@ -1,0 +1,145 @@
+/* Cancer DNA Pipeline web interface.
+   Deliberately plain: a lab tool that has to stay readable on a projector
+   and print sensibly, with no external fonts or CDN dependencies (the
+   machine running this may have no internet access). */
+
+:root {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --ink: #1c2128;
+  --muted: #626b78;
+  --line: #dde1e7;
+  --accent: #1f6feb;
+  --ok: #1a7f37;
+  --warn: #9a6700;
+  --bad: #b42318;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 24px;
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+}
+.brand { font-weight: 650; text-decoration: none; color: var(--ink); }
+.topbar nav a { margin-left: 16px; text-decoration: none; color: var(--muted); }
+.topbar nav a.primary { color: var(--accent); font-weight: 600; }
+
+main { max-width: 980px; margin: 24px auto 48px; padding: 0 20px; }
+
+h1 { font-size: 22px; margin: 0 0 16px; }
+h2 { font-size: 15px; margin: 0 0 12px; letter-spacing: .01em; }
+
+footer {
+  max-width: 980px; margin: 0 auto 40px; padding: 0 20px;
+  color: var(--muted); font-size: 12.5px;
+}
+
+/* ---- cards & forms ---- */
+.card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 8px; padding: 18px 20px; margin-bottom: 16px;
+}
+.stack { display: block; }
+
+.fields {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px 18px;
+}
+label { display: block; font-size: 13px; }
+label > span { display: block; color: var(--muted); margin-bottom: 4px; }
+input[type=text], input[type=number], input[type=date], select, textarea {
+  width: 100%; padding: 7px 9px; font: inherit; font-size: 14px;
+  border: 1px solid var(--line); border-radius: 6px; background: #fff;
+}
+textarea { resize: vertical; }
+label.check {
+  display: flex; align-items: baseline; gap: 8px;
+  margin-top: 12px; font-size: 13.5px;
+}
+label.check input { margin: 0; }
+
+.hint { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+.hint.inline { display: inline; margin: 0; }
+.hint.warn { color: var(--warn); }
+
+.actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.actions form { margin: 0; }
+
+.button {
+  display: inline-block; padding: 8px 16px; border-radius: 6px;
+  background: var(--accent); color: #fff; border: 0; cursor: pointer;
+  font: inherit; font-size: 14px; font-weight: 550; text-decoration: none;
+}
+.button.ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+.button.danger { background: var(--bad); }
+
+/* ---- tables ---- */
+table.grid { width: 100%; border-collapse: collapse; background: #fff;
+             border: 1px solid var(--line); border-radius: 8px; }
+table.grid th, table.grid td {
+  text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line);
+  font-size: 13.5px;
+}
+table.grid th { color: var(--muted); font-weight: 600; font-size: 12px;
+                text-transform: uppercase; letter-spacing: .04em; }
+table.grid tr:last-child td { border-bottom: 0; }
+
+dl.kv { display: grid; grid-template-columns: 190px 1fr; gap: 6px 16px;
+        margin: 0; font-size: 13.5px; }
+dl.kv dt { color: var(--muted); }
+dl.kv dd { margin: 0; word-break: break-word; }
+
+/* ---- status & progress ---- */
+.status {
+  display: inline-block; padding: 2px 9px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; text-transform: capitalize;
+  background: #eef1f5; color: var(--muted);
+}
+.status.running  { background: #e6f0ff; color: var(--accent); }
+.status.queued   { background: #f0eef8; color: #6b4fbb; }
+.status.finished { background: #e7f5ec; color: var(--ok); }
+.status.failed,
+.status.interrupted { background: #fdeceb; color: var(--bad); }
+.status.cancelled { background: #fdf3e0; color: var(--warn); }
+
+.bar { background: #eef1f5; border-radius: 999px; height: 6px;
+       overflow: hidden; min-width: 90px; }
+.bar.big { height: 9px; margin: 10px 0 4px; }
+.bar span { display: block; height: 100%; background: var(--accent);
+            transition: width .4s ease; }
+.progress-cell { display: flex; align-items: center; gap: 8px; }
+.statusline { display: flex; align-items: center; gap: 10px; }
+
+/* ---- log & code ---- */
+.mono, pre, code { font-family: ui-monospace, SFMono-Regular, Menlo,
+                   Consolas, monospace; }
+.small { font-size: 12.5px; color: var(--muted); }
+pre.cmd, pre.log {
+  background: #0f1720; color: #d7dee8; padding: 12px 14px;
+  border-radius: 6px; font-size: 12px; line-height: 1.55;
+  overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-word;
+}
+pre.log { max-height: 460px; }
+
+/* ---- messages ---- */
+.errors {
+  background: #fdeceb; border: 1px solid #f3c7c3; color: #7a271f;
+  padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13.5px;
+}
+.errors ul { margin: 6px 0 0 18px; padding: 0; }
+.errortext { color: var(--bad); font-size: 13px; margin: 10px 0 0; }
+.note {
+  background: #eef4ff; border: 1px solid #cfe0ff; color: #1c3d7a;
+  padding: 10px 14px; border-radius: 8px; font-size: 13.5px;
+}
+.empty { text-align: center; padding: 48px 0; color: var(--muted); }

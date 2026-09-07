@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Run {{ job.id }} &middot; Cancer DNA Pipeline{% endblock %}
+{% block content %}
+
+<h1>Run <span class="mono">{{ job.id }}</span></h1>
+
+{% if report_error %}
+<div class="errors"><strong>The report could not be generated:</strong>
+  <p class="mono small">{{ report_error }}</p></div>
+{% endif %}
+
+{% if notice %}
+<section class="card {{ 'warn' if notice_kind == 'error' else '' }}">
+  <p><strong>{{ notice }}</strong></p>
+</section>
+{% endif %}
+{% if batch_of %}
+<section class="card">
+  <p class="hint">Part of a batch of {{ batch_of }} samples. Each runs in
+    turn and writes its own report; see the run list for the others.</p>
+</section>
+{% endif %}
+{% if cleanup and cleanup.entries and job.status not in ('running','queued') %}
+<section class="card">
+  <h2>Intermediate files</h2>
+  <p class="hint">Reproducible from the input FASTQs and not needed once the
+    VCFs and the report exist. The call sets, report, metrics and logs are
+    never touched.</p>
+  <ul>
+    {% for name, size in cleanup.entries %}
+      <li><code>{{ name }}/</code> &mdash; {{ human_bytes(size) }}</li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="{{ url_for('job_cleanup', job_id=job.id) }}">
+    <label class="check"><input type="checkbox" name="keep_bam" checked>
+      Keep the recalibrated BAM (<code>bqsr/</code>)
+      <span class="hint inline">&mdash; re-calling variants from it takes
+      minutes; rebuilding it takes about an hour.</span>
+    </label>
+    <button type="submit">Delete intermediates and free
+      {{ human_bytes(cleanup.total) }}</button>
+  </form>
+</section>
+{% endif %}
+{% if auto_applied %}
+<section class="card">
+  <h2>Resources filled in automatically</h2>
+  <p class="hint">These were blank on the form and were set from the installed
+    databases at submit time, so the run used the full flow. Tick
+    &ldquo;minimal run&rdquo; to prevent this.</p>
+  <ul>{% for k in auto_applied %}<li><code>{{ k }}</code></li>{% endfor %}</ul>
+</section>
+{% endif %}
+{% if run_notes %}
+<section class="card warn">
+  <h2>What this run left out</h2>
+  <p class="hint">The pipeline skips a step cleanly when its resource is
+    missing, so a run like this finishes successfully and still produces a
+    weaker result than it could. Nothing here is an error.</p>
+  <ul>
+    {% for n in run_notes %}<li>{{ n }}</li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% if char_warnings %}
+<div class="errors">
+  <strong>Some patient details cannot be rendered in the PDF.</strong>
+  <p>These characters have no glyph in the report font and will appear as
+  <code>?</code>: <code>{{ char_warnings|join(' ') }}</code>. Consider
+  transliterating the affected field before issuing a report.</p>
+</div>
+{% endif %}
+
+<section class="card">
+  <div class="statusline">
+    <span class="status {{ job.status }}" id="status">{{ job.status }}</span>
+    <span id="stepname" class="small">{{ job.step_name }}</span>
+  </div>
+  <div class="bar big"><span id="bar" style="width: {{ job.percent }}%"></span></div>
+  <p class="small"><span id="steptext">{{ job.step }}/{{ job.total_steps or '?' }}</span> steps</p>
+
+  <div class="actions">
+    {% if job.status in ['running', 'queued'] %}
+      <form method="post" action="{{ url_for('job_cancel', job_id=job.id) }}">
+        <button class="button danger" type="submit">Cancel run</button>
+      </form>
+    {% else %}
+      <form method="post" action="{{ url_for('job_report', job_id=job.id) }}">
+        <button class="button" type="submit">Generate PDF report</button>
+      </form>
+      <a class="button ghost" href="{{ url_for('job_report_download', job_id=job.id) }}">Download PDF</a>
+      <a class="button ghost" href="{{ url_for('job_results', job_id=job.id) }}">Results</a>
+    {% endif %}
+    <a class="button ghost" href="{{ url_for('job_log', job_id=job.id) }}">Full log</a>
+  </div>
+  {% if job.error %}<p class="errortext">{{ job.error }}</p>{% endif %}
+</section>
+
+<section class="card">
+  <h2>Patient</h2>
+  <dl class="kv">
+    {% for key, label in patient_fields %}
+      {% if patient.get(key) %}<dt>{{ label }}</dt><dd>{{ patient[key] }}</dd>{% endif %}
+    {% endfor %}
+  </dl>
+</section>
+
+<section class="card">
+  <h2>Command</h2>
+  <pre class="cmd">{{ job.command }}</pre>
+  <dl class="kv">
+    <dt>Output directory</dt><dd class="mono small">{{ job.output_dir }}</dd>
+    <dt>Run directory</dt><dd class="mono small">{{ job.run_dir }}</dd>
+  </dl>
+</section>
+
+<section class="card">
+  <h2>Log</h2>
+  <pre id="log" class="log">loading…</pre>
+</section>
+
+<script>
+// Poll for status and the log tail. The pipeline can run for hours, so the
+// page is deliberately cheap: it re-renders only the parts that change and
+// stops polling once the run reaches a terminal state.
+const jobId = {{ job.id|tojson }};
+const terminal = ['finished', 'failed', 'cancelled', 'interrupted'];
+const logEl = document.getElementById('log');
+
+async function poll() {
+  try {
+    const res = await fetch(`/api/job/${jobId}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const j = data.job;
+
+    document.getElementById('status').textContent = j.status;
+    document.getElementById('status').className = 'status ' + j.status;
+    document.getElementById('stepname').textContent = j.step_name || '';
+    document.getElementById('bar').style.width = j.percent + '%';
+    document.getElementById('steptext').textContent =
+      j.step + '/' + (j.total_steps || '?');
+
+    // Only scroll the log if the user is already at the bottom, so reading
+    // back through it is not yanked away on every poll.
+    const atBottom =
+      logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 40;
+    logEl.textContent = data.log.join('\n') || '(no output yet)';
+    if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+
+    if (terminal.includes(j.status)) {
+      // Reload once so the action buttons reflect the finished state.
+      setTimeout(() => window.location.reload(), 800);
+      return;
+    }
+  } catch (e) { /* transient: try again on the next tick */ }
+  setTimeout(poll, 2000);
+}
+poll();
+</script>
+
+{% endblock %}

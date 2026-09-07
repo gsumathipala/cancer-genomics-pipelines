@@ -1,0 +1,88 @@
+# Conda environment for the cancer DNA pipeline.
+#
+#   mamba env create -f environment.yml     # mamba solves this far faster
+#   conda activate cancer_pipeline
+#
+# This is the machine-readable counterpart to install.md's tool inventory:
+# an installer should consume THIS file rather than parsing the prose, so the
+# two cannot drift apart.
+#
+# DELIBERATELY NOT INCLUDED
+#   pcgr  - the clinical reporting step. It pulls a large dependency set and
+#           needs its own data bundle, and a version mismatch between the two
+#           is the usual cause of a failed first run. The pipeline skips the
+#           step cleanly when it is absent.
+#
+#           PCGR is NOT on bioconda. It ships from its own 'pcgr' Anaconda
+#           channel and needs TWO sibling environments built from pinned
+#           lock files -- see install.md 'Tool inventory':
+#               LOCK=https://raw.githubusercontent.com/sigven/pcgr/v2.3.2/conda/env/lock
+#               conda create -y -n pcgr  --file <(curl -sSL $LOCK/pcgr-linux-64.lock)
+#               conda create -y -n pcgrr --file <(curl -sSL $LOCK/pcgrr-linux-64.lock)
+#
+#           It also cannot be run from this environment: PCGR resolves its
+#           VEP plugin directory from $CONDA_PREFIX/share, so step 10 must be
+#           produced separately via 'conda activate pcgr && python
+#           pcgr_report.py ...'.
+#
+# VERSION PINS
+#   Only floors are pinned, and only where the code actually depends on the
+#   behaviour: fastp >= 0.23 for the flags the QC step passes, GATK 4.x for
+#   the Mutect2 command line used here, Python >= 3.8 for the syntax the
+#   scripts use. Everything else floats so the solve stays tractable.
+#
+#   openjdk is the one exception -- it carries a CEILING as well as a floor,
+#   and the window is only three versions wide:
+#
+#     floor   >= 21  because snpeff 5.4 declares it. Nothing below solves.
+#     ceiling <  24  because GATK's Spark tools break on it. JDK 24 (JEP 486)
+#                    made javax.security.auth.Subject.getSubject() throw
+#                    unconditionally, and Hadoop's UserGroupInformation calls
+#                    it while Spark builds its SparkContext. Step 3
+#                    (MarkDuplicatesSpark) then dies before reading a single
+#                    read, with
+#                        java.lang.UnsupportedOperationException:
+#                            getSubject is not supported
+#                    and GATK exit code 3. There is no flag that rescues it:
+#                    -Djava.security.manager=allow, the JDK 18-23 workaround,
+#                    is itself rejected at startup from 24 onwards.
+#
+#   Leaving openjdk unpinned is not safe: conda-forge's newest JDK satisfies
+#   snpeff's ">= 21" and installs a version that silently breaks step 3. That
+#   is exactly what happened on the first build of this environment, which
+#   landed openjdk 25 and failed at duplicate marking.
+
+name: cancer_pipeline
+
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  # --- runtime -------------------------------------------------------
+  - python>=3.8
+  # Both bounds matter. See VERSION PINS above before widening either.
+  - openjdk>=21,<24
+
+  # --- stage 1: QC ---------------------------------------------------
+  - fastp>=0.23
+  - fastqc
+
+  # --- stage 2: alignment --------------------------------------------
+  - bwa-mem2
+  - samtools
+
+  # --- stage 3: variant calling and annotation ------------------------
+  - gatk4>=4.2
+  - bcftools
+  - snpeff
+
+  # --- optional but commonly wanted ------------------------------------
+  - multiqc
+
+  # --- web interface ---------------------------------------------------
+  # The analysis scripts need no third-party Python packages at all; Flask
+  # is required only by webapp/. PDF generation adds nothing further --
+  # webapp/pdfwriter.py writes PDFs using the standard library alone.
+  - flask

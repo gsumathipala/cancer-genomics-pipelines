@@ -1,0 +1,1188 @@
+.\" Man page for the Cancer DNA somatic variant-calling pipeline.
+.\" Render locally with:  man ./cancer-dna-pipeline.1
+.\" Install with:         install -m644 cancer-dna-pipeline.1 /usr/share/man/man1/
+.TH CANCER\-DNA\-PIPELINE 1 "2026-09-07" "cancer\-dna\-pipeline" "User Commands"
+.
+.SH NAME
+cancer\-dna\-pipeline \- somatic variant calling for Illumina NextSeq 1000 cancer DNA
+.PP
+.BR fastq_qc_clean.py ,
+.BR align_reads.py ,
+.BR comprehensive_variant_calling.py ,
+.BR pipeline_orchestrator.py ,
+.B pcgr_report.py
+.
+.SH SYNOPSIS
+.B fastq_qc_clean.py
+.BI \-i " INPUT_DIR"
+.BI \-o " OUTPUT_DIR"
+.RI [ options ]
+.PP
+.B align_reads.py
+.BI \-o " OUTPUT_DIR"
+.BI \-r " REFERENCE"
+.RB [ \-i
+.IR INPUT_DIR ]
+.RB [ \-\-manifest
+.IR MANIFEST ]
+.RI [ options ]
+.PP
+.B comprehensive_variant_calling.py
+.BI \-o " OUTPUT_DIR"
+.BI \-r " REFERENCE"
+.RB [ \-i
+.IR INPUT_DIR ]
+.RB [ \-\-manifest
+.IR MANIFEST ]
+.RI [ options ]
+.PP
+.B pipeline_orchestrator.py
+.BI \-\-stage3\-args " ARGS"
+.RB [ \-\-stage1\-args
+.IR ARGS ]
+.RB [ \-\-stage2\-args
+.IR ARGS ]
+.RI [ options ]
+.PP
+.B pcgr_report.py
+.BI \-\-input\-vcf " VCF"
+.BI \-\-output\-dir " DIR"
+.BI \-\-sample\-id " ID"
+.BI \-\-pcgr\-refdata\-dir " DIR"
+.RI [ options ]
+.
+.SH DESCRIPTION
+Four cooperating command\-line tools that take raw paired\-end FASTQ files from
+an Illumina NextSeq 1000 and produce annotated somatic variant calls.
+They can be run individually or chained by the orchestrator.
+.PP
+.TP
+.B fastq_qc_clean.py
+Stage 1. Discovers R1/R2 pairs, optionally merges lane\-split files, and runs
+.BR fastp (1)
+for adapter removal, poly\-G trimming (a NextSeq two\-colour chemistry artefact)
+and quality filtering. Optionally runs
+.BR fastqc (1)
+before and after. Writes cleaned FASTQs plus a
+.I run_manifest_*.json
+that the later stages consume.
+.TP
+.B align_reads.py
+Stage 2. Aligns cleaned reads with
+.BR bwa\-mem2 (1)
+piped straight into
+.BR samtools (1)
+.BR sort ,
+producing sorted, indexed BAMs and alignment statistics. Performs no duplicate
+marking, recalibration or variant calling.
+.TP
+.B comprehensive_variant_calling.py
+Stage 3, and a complete self\-contained pipeline in its own right: QC,
+alignment, duplicate marking, BQSR, Mutect2 somatic calling, read\-orientation
+(strand bias) modelling, contamination estimation, filtering, COSMIC
+annotation and SnpEff annotation.
+Individual stages can be skipped with
+.BR \-\-skip\-steps .
+.TP
+.B pipeline_orchestrator.py
+Chains the three stages into a single command, handling the manifest handoff
+between them.
+.TP
+.B pcgr_report.py
+Optional reporting step, invoked as step 11 of
+.B comprehensive_variant_calling.py
+or run standalone. Wraps PCGR (Personal Cancer Genome Reporter) to turn a
+somatic VCF into a clinical interpretation report: therapeutic actionability
+tiered by AMP/ASCO/CAP. Tumour mutational burden, microsatellite instability
+and COSMIC mutational-signature fitting are computed only when the matching
+.BI \-\-pcgr\-estimate\- *
+flag is given; PCGR leaves all three off by default and does not warn, so the
+report simply lacks those sections.
+.
+.SS Input modes
+The alignment and variant\-calling tools accept sample input three ways, in
+priority order:
+.IP 1. 4
+.BR \-\-manifest :
+reuse a previous
+.B fastq_qc_clean.py
+run. Sample names and cleaned FASTQ paths come from the manifest, and in
+.B comprehensive_variant_calling.py
+the
+.B qc
+step is automatically skipped.
+.IP 2. 4
+.BR \-\-auto\-discover
+.RB ( comprehensive_variant_calling.py
+only): find R1/R2 pairs in
+.I INPUT_DIR
+by glob pattern. The first pair becomes the tumour, the second the normal,
+and any further pairs are ignored. Use it only on a directory holding ONE
+patient \(em see
+.B CAVEATS .
+.IP 3. 4
+Explicit
+.BR \-\-tumour\-sample ,
+.BR \-\-tumour\-r1 ,
+.B \-\-tumour\-r2
+(and optionally the matching
+.B \-\-normal\-*
+options).
+.
+.SS The handoff mechanism
+.B fastq_qc_clean.py
+writes
+.IR run_manifest_<timestamp>.json ,
+recording the exact path of every cleaned FASTQ. Both downstream tools read it
+via
+.BR \-\-manifest ,
+which avoids fragile filename guessing.
+.PP
+When the orchestrator runs stage 2, it additionally appends
+.B \-\-skip\-steps align
+and
+.BI \-\-aligned\-dir " STAGE2_OUTPUT" /aligned
+to stage 3's arguments, so the BAMs stage 2 produced are reused. Without this,
+stage 3 would re\-align from the cleaned FASTQs and BWA\-MEM2 would run twice.
+.
+.SH OPTIONS
+.
+.SS fastq_qc_clean.py \(em QC and cleaning
+.TP
+.BI \-i ", " \-\-input ", " \-\-input\-dir " DIR"
+Directory containing the raw FASTQ files. Required.
+.TP
+.BI \-o ", " \-\-output ", " \-\-output\-dir " DIR"
+Directory for cleaned FASTQ files and reports. Required.
+.TP
+.BI \-\-r1\-pattern " GLOB"
+Glob matching Read 1 files. Default:
+.IR *_R1_*.fastq* .
+.TP
+.BI \-\-r2\-pattern " GLOB"
+Glob matching Read 2 files. Default:
+.IR *_R2_*.fastq* .
+The two patterns must differ in exactly one literal segment; that segment is
+the read token used to pair files.
+.TP
+.B \-\-recursive
+Search subdirectories recursively.
+.TP
+.B \-\-merge\-lanes
+Concatenate lane\-split files
+.RI ( _L001 .. _L004 )
+into one sample before cleaning. See
+.B CAVEATS
+regarding sample naming.
+.TP
+.B \-\-overwrite
+Reprocess samples whose cleaned output already exists. By default such samples
+are skipped and recorded with status
+.IR skipped_existing .
+.TP
+.B \-\-dry\-run
+Print the commands without running fastp or FastQC.
+.TP
+.BI \-\-average\-qual " INT"
+Drop a read whose
+.I mean
+base quality is below this (fastp
+.BR \-e ).
+0 disables. Default: 20.
+.TP
+.BI \-\-min\-base\-quality ", " \-\-qualified\-quality " INT"
+Phred score at or above which a base counts as "qualified" (fastp
+.BR \-q ).
+This is
+.I not
+a mean\-quality filter; it feeds
+.BR \-\-max\-unqualified\-pct .
+Default: 15.
+.TP
+.BI \-\-max\-unqualified\-pct ", " \-\-unqualified\-percent " INT"
+Drop a read if more than this percentage of its bases are unqualified (fastp
+.BR \-u ).
+Default: 40.
+.TP
+.BI \-\-min\-read\-length ", " \-\-min\-length " INT"
+Minimum read length after trimming. Default: 50.
+.TP
+.BI \-\-max\-n\-bases ", " \-\-n\-base\-limit " INT"
+Drop a read with more than this many N bases. Default: 5.
+.TP
+.BI \-\-adapter\-r1 " SEQ"
+.TQ
+.BI \-\-adapter\-r2 " SEQ"
+Explicit adapter sequences. Omit to rely on detection.
+.TP
+.B \-\-no\-detect\-adapter\-pe
+Disable fastp's paired\-end adapter detection. It is ON by default: overlap
+analysis alone misses read\-through on long\-insert fragments.
+.TP
+.B \-\-no\-poly\-g
+Disable poly\-G trimming. ON by default because the NextSeq 1000 uses
+two\-colour chemistry, where "no signal" reads as G.
+.TP
+.BI \-\-poly\-g\-min\-len " INT"
+Minimum poly\-G run length to trim. Default: 10.
+.TP
+.B \-\-cut\-right
+Enable 3\(aq sliding\-window quality trimming. OFF by default: it distorts
+allele fractions at read ends in low\-VAF somatic calling.
+.TP
+.BI \-\-cut\-right\-mean\-quality " INT"
+Sliding\-window mean quality when
+.B \-\-cut\-right
+is set. Default: 20.
+.TP
+.B \-\-correction
+Enable overlap\-based base correction. OFF by default: it interferes with UMI
+consensus calling.
+.TP
+.BI \-\-umi\-loc " LOC"
+Where the UMI lives: one of
+.IR index1 ", " index2 ", " read1 ", " read2 ", " per_index ", " per_read .
+If your panel carries UMIs and you omit this, the UMI bases are consumed as
+insert sequence and downstream consensus calling is invalid.
+.TP
+.BI \-\-umi\-len " INT"
+UMI length in bases. Required when
+.B \-\-umi\-loc
+is
+.IR read1 ", " read2 " or " per_read ;
+for index\-based UMIs the whole index read is the UMI, so no length is needed.
+.TP
+.BI \-\-umi\-skip " INT"
+Bases to skip after the UMI (for example a linker). Requires
+.BR \-\-umi\-loc .
+.TP
+.BI \-\-threads " INT"
+Threads for fastp (which caps usefully near 16). Default: 8.
+.TP
+.B \-\-skip\-fastqc
+Skip FastQC on the raw reads.
+.TP
+.B \-\-fastqc\-cleaned
+Also run FastQC on the cleaned reads.
+.TP
+.B \-\-failed\-out
+Write discarded reads to a per\-sample file for audit.
+.TP
+.B \-\-no\-overrepresentation
+Disable fastp's overrepresented\-sequence analysis. It is ON by default and is
+useful for spotting library artefacts, but costs runtime.
+.TP
+.BI \-\-reads\-to\-process " INT"
+Process only this many reads from each FASTQ. Useful for quick test runs.
+.
+.SS align_reads.py \(em alignment
+.TP
+.BI \-i ", " \-\-input\-dir " DIR"
+Directory containing cleaned FASTQ files. Required unless
+.B \-\-manifest
+is given.
+.TP
+.BI \-o ", " \-\-output\-dir " DIR"
+Directory for aligned BAMs and statistics. Required.
+.TP
+.BI \-r ", " \-\-reference " REF"
+Reference genome FASTA, or the known name
+.I hg38
+to download it automatically from the Broad Institute's public bucket.
+.TP
+.BI \-\-manifest " FILE"
+A
+.B fastq_qc_clean.py
+run manifest. Sample names and cleaned FASTQ paths are read from it, overriding
+any explicit
+.B \-\-tumour\-r1/r2
+arguments.
+.TP
+.BI \-\-tumour\-sample " NAME"
+Sample name for the tumour, used in the BAM @RG SM tag.
+.TP
+.BI \-\-tumour\-r1 " FILE"
+.TQ
+.BI \-\-tumour\-r2 " FILE"
+Tumour FASTQs. A bare filename is resolved against
+.IR INPUT_DIR .
+.TP
+.BI \-\-normal\-sample " NAME"
+.TQ
+.BI \-\-normal\-r1 " FILE"
+.TQ
+.BI \-\-normal\-r2 " FILE"
+Matched normal. All three must be given together, or none.
+.TP
+.B \-\-two\-pass
+Enable BWA\-MEM2 two\-pass alignment. Slower but more sensitive in difficult
+regions, which is recommended for tumours carrying structural rearrangements.
+.TP
+.BI \-\-threads " INT"
+CPU threads. BWA\-MEM2 uses all of them; samtools sort uses
+.IR threads\-1 .
+Default: 8.
+.TP
+.B \-\-skip\-stats
+Skip generation of flagstat/idxstats/stats files.
+.TP
+.B \-\-skip\-fastqc
+Skip FastQC on the aligned BAM.
+.TP
+.B \-\-overwrite
+Realign a sample whose sorted BAM
+.I and
+its .bai already exist. By default such a sample is skipped, which makes
+re\-running the stage after a crash cheap.
+.TP
+.B \-\-dry\-run
+Print every command without executing it. No alignment, no reference download,
+no input hashing.
+.
+.SS comprehensive_variant_calling.py \(em full pipeline
+Accepts, with identical spelling and defaults, every QC option listed for
+.B fastq_qc_clean.py
+above except
+.BR \-\-skip\-fastqc ", " \-\-fastqc\-cleaned " and " \-\-overwrite
+(it runs no FastQC and has no output\-reuse detection), and every
+.BR \-\-tumour\-* / \-\-normal\-* ,
+.BR \-\-manifest ,
+.BR \-i ", " \-o ", " \-r ", " \-\-two\-pass ", " \-\-threads ", " \-\-dry\-run
+option listed for
+.BR align_reads.py .
+Options unique to it:
+.TP
+.BI \-\-r1\-pattern " GLOB"
+.TQ
+.BI \-\-r2\-pattern " GLOB"
+.TQ
+.B \-\-recursive
+As for
+.BR fastq_qc_clean.py ,
+used by
+.BR \-\-auto\-discover .
+.TP
+.B \-\-auto\-discover
+Discover FASTQ pairs in
+.I INPUT_DIR
+by pattern instead of naming them explicitly. The first pair is the tumour, the
+second the normal, and any further pairs are silently ignored.
+.B This is safe only when the directory holds one patient.
+See
+.B CAVEATS .
+.TP
+.B \-\-merge\-lanes
+Accepted for interface compatibility only. In auto\-discover mode lane\-split
+samples are
+.I always
+concatenated, so this flag has no effect. See
+.BR CAVEATS .
+.TP
+.BI \-\-dbsnp " VCF"
+dbSNP VCF, used as a BQSR known\-sites resource.
+.TP
+.BI \-\-germline\-resource " VCF"
+gnomAD VCF for germline filtering. Important in tumour\-only mode.
+.TP
+.BI \-\-panel\-of\-normals " VCF"
+Panel of Normals VCF for recurrent\-artefact subtraction.
+.TP
+.BI \-\-known\-indels " VCF..."
+Additional known\-indel VCFs for BQSR.
+.TP
+.BI \-\-cosmic " VCF"
+COSMIC VCF of known somatic cancer mutations, used to annotate the filtered
+calls. Must match the reference build. Obtain it from
+.UR https://cancer.sanger.ac.uk/cosmic
+.UE .
+.TP
+.BI \-\-contamination\-resource " VCF"
+Common biallelic germline SNP VCF, with allele frequencies in
+.IR INFO/AF ,
+used to estimate cross\-sample contamination (step 7). Broad's
+.I small_exac_common_3.hg38.vcf.gz
+is the standard choice. Without it FilterMutectCalls assumes a contamination
+fraction of ZERO rather than measuring one, so real contamination goes
+undetected \(em which matters most in tumour\-only mode, where no matched
+normal can contradict a low\-VAF call.
+.TP
+.BI \-\-intervals " FILE"
+Target intervals as .bed, .interval_list or .list, restricting BQSR and
+Mutect2. ApplyBQSR is deliberately NOT restricted, since it must rewrite the
+whole BAM.
+.B Supply this for any capture panel or exome.
+Without it Mutect2 traverses the entire genome and calls on the off\-target
+reads every capture protocol leaves scattered across it; on a 4.5 Mb panel
+that was 635,414 raw candidates and 127,081 PASS calls, against 20,761 and
+1,464 with. Use the vendor's BED, in the reference's contig naming.
+.TP
+.BI \-\-interval\-padding " INT"
+Extend each interval by this many bases on both sides. 50\(en100 is usual for
+capture: probes cover the target but reads run past its edges, so a variant at
+the first or last base needs the flanking reads to be callable. Ignored
+without
+.BR \-\-intervals .
+Default: 0.
+.TP
+.BI \-\-min\-depth " INT"
+Tag calls whose tumour
+.I FORMAT/DP
+is below this as
+.IR low_depth ,
+after FilterMutectCalls. GATK has no depth filter of its own \(em its
+thresholds are likelihood\-based and will PASS a variant supported by two
+reads. Records are tagged, never removed. The tumour column is located by
+sample NAME, not position. Default: 0 (disabled).
+.TP
+.BI \-\-foldback\-min\-match " FLOAT"
+Tag an insertion
+.I foldback
+when this fraction of it reverse\-complement matches the flanking reference.
+Such insertions are library\-prep artefacts: a fragment end folds back on
+itself and is extended, so the read carries a sequence followed by its own
+reverse complement, which aligns as an insertion of the reverse complement of
+the adjacent reference. Nothing else in this pipeline removes them \(em they
+are not strand\-biased, not low\-depth, not in tandem repeats, and reach
+allele fractions above 0.3, so no VAF floor separates them either.
+.B On by default (0.7),
+because the failure mode is silent: on the panel this was developed against,
+1,882 of 2,047 insertions were foldbacks, accounting for 206 of 270 PASS
+frameshift and stop_gained calls \(em including BRCA1, BRCA2, PALB2, PTEN and
+ATM frameshifts that a clinical reporter tiered as oncogenic. Records are
+tagged, never removed, and
+.I INFO/FBMATCH
+carries the matched fraction for every insertion tested, so the evidence is
+reviewable. Set 0 to disable. Genuine foldback inversions do occur in cancer
+genomes, particularly where BRCA\-mediated repair has failed, which is why
+this tags rather than deletes.
+.TP
+.BI \-\-min\-allele\-fraction " FLOAT"
+Minimum tumour allele fraction; FilterMutectCalls tags anything below it
+.IR low_allele_frac .
+GATK's own default is 0.0, i.e. no VAF floor at all. On a panel this is the
+main handle on PCR\-slippage indels, which cluster at 3\(en10% VAF and
+otherwise PASS in numbers that swamp the real calls. Set it from the assay's
+validated limit of detection, not from what makes the output look tidy: too
+high and genuine subclonal variants disappear. Default: 0.0 (disabled).
+.TP
+.BI \-\-snpeff\-memory " SIZE"
+JVM maximum heap for SnpEff, as an
+.B \-Xmx
+value such as
+.IR 8g .
+The bioconda launcher defaults to 1g, which cannot hold the hg38 database: the
+run dies of OutOfMemory partway through, after writing tens of megabytes of
+valid\-looking VCF. Default: 8g.
+.TP
+.B \-\-skip\-bqsr
+Skip base quality score recalibration. BQSR is also skipped automatically when
+neither
+.B \-\-dbsnp
+nor
+.B \-\-known\-indels
+is supplied, since it needs known sites.
+.TP
+.BI \-\-aligned\-dir " DIR"
+Directory holding pre\-aligned, sorted and indexed BAMs named
+.IR <sample>.sorted.bam .
+Used with
+.B \-\-skip\-steps align
+to reuse BAMs from a separate
+.B align_reads.py
+run. Defaults to
+.IR <output\-dir>/aligned .
+.TP
+.BI \-\-reads\-to\-process " INT"
+Process only this many reads from each FASTQ.
+.TP
+.BI \-\-skip\-steps " STEP..."
+Skip one or more pipeline stages. See
+.B PIPELINE STAGES
+for the accepted names and what skipping each one implies.
+.TP
+.B \-\-resume
+Reuse steps whose output is already complete in
+.IR \-\-output\-dir ,
+instead of redoing them. A step counts as complete only when every artefact
+it owns is present, non\-empty and (for BAMs and compressed VCFs) indexed, so
+a half\-written output from a crash is re\-run rather than trusted. Unlike a
+step named in
+.BR \-\-skip\-steps ,
+a resumed step feeds its OWN output forward: resuming
+.B bqsr
+hands the recalibrated BAM to Mutect2, whereas skipping it would hand over
+the duplicate\-marked one. Refuses to run when the previous run's parameters
+differ \(em see
+.BR CAVEATS .
+.TP
+.B \-\-resume\-force
+Resume despite a parameter change. The result mixes settings from both runs.
+.PP
+The PCGR reporting step (step 11) is driven by these, and runs only when
+.B \-\-pcgr\-refdata\-dir
+is supplied:
+.TP
+.BI \-\-pcgr\-refdata\-dir " DIR"
+PCGR reference data bundle. Supplying it enables the step.
+.TP
+.BI \-\-vep\-dir " DIR"
+Ensembl VEP cache directory used by PCGR.
+.TP
+.BI \-\-pcgr\-assay " TYPE"
+.IR WGS ", " WES " or " TARGETED .
+Drives TMB scaling. Default: TARGETED.
+.TP
+.B \-\-pcgr\-estimate\-tmb
+.TQ
+.B \-\-pcgr\-estimate\-msi
+.TQ
+.B \-\-pcgr\-estimate\-signatures
+Ask PCGR for tumour mutational burden, microsatellite instability and COSMIC
+mutational\-signature fitting respectively. PCGR leaves all three OFF by
+default and says nothing when they are off \(em the report simply lacks those
+sections, which reads as "nothing found" rather than "never calculated".
+.B \-\-pcgr\-estimate\-msi
+is honoured only for WGS/WES tumour\-control runs: on a TARGETED or
+tumour\-only query PCGR logs a warning and skips it, so the flag does nothing
+on a panel.
+.TP
+.BI \-\-pcgr\-target\-size\-mb " FLOAT"
+Megabases actually sequenced, used as the TMB denominator. TMB is a rate, and
+PCGR assumes 34 Mb for a TARGETED assay \(em an exome\-sized default that
+understates a 4.5 Mb panel by roughly 7.5x.
+.B Set this whenever you set \-\-pcgr\-estimate\-tmb on a panel.
+Use the panel's target footprint: the same BED you pass to
+.BR \-\-intervals .
+.TP
+.BI \-\-pcgr\-tumour\-site " INT"
+PCGR tumour\-site code; site\-specific actionability depends on it.
+.TP
+.B \-\-pcgr\-lift\-tags
+Copy the tumour's (and normal's) FORMAT DP/AF into INFO tags before running
+PCGR, and forward the tag names automatically. Needed for a meaningful TMB
+from a Mutect2 VCF. See
+.BR CAVEATS .
+.TP
+.BI \-\-pcgr\-tumor\-dp\-tag " TAG"
+.TQ
+.BI \-\-pcgr\-tumor\-af\-tag " TAG"
+INFO tags holding tumour depth and allele fraction, for a VCF you
+transformed yourself. Unnecessary with
+.BR \-\-pcgr\-lift\-tags .
+.TP
+.B \-\-pcgr\-legacy\-v1
+Emit the PCGR 1.x bundle flag
+.RB ( \-\-pcgr_dir )
+instead of the 2.x
+.BR \-\-refdata_dir .
+.TP
+.BI \-\-pcgr\-extra\-args " STRING"
+Extra arguments forwarded verbatim to
+.BR pcgr .
+.
+.SS pcgr_report.py \(em clinical report (standalone)
+Runs the same step outside the pipeline, over any somatic VCF.
+.TP
+.BI \-\-input\-vcf " FILE"
+Somatic VCF to report on. Required.
+.TP
+.BI \-\-output\-dir " DIR"
+Directory for the report. Required.
+.TP
+.BI \-\-sample\-id " ID"
+Sample identifier used in the report. Required.
+.TP
+.BI \-\-pcgr\-refdata\-dir " DIR"
+PCGR reference data bundle. Required.
+.TP
+.BI \-\-vep\-dir " DIR"
+Ensembl VEP cache directory.
+.TP
+.BI \-\-genome\-assembly " BUILD"
+.IR grch38 " (default) or " grch37 .
+Must match the reference the variants were called against.
+.TP
+.BI \-\-assay " TYPE"
+.IR WGS ", " WES " or " TARGETED .
+.TP
+.B \-\-estimate\-tmb
+.TQ
+.B \-\-estimate\-msi
+.TQ
+.B \-\-estimate\-signatures
+Request TMB, MSI and mutational\-signature fitting. All three are OFF in PCGR
+by default and their absence is silent.
+.B \-\-estimate\-msi
+applies only to WGS/WES tumour\-control runs; PCGR skips it with a warning on
+anything else.
+.TP
+.BI \-\-effective\-target\-size\-mb " FLOAT"
+TMB denominator in megabases. PCGR defaults to 34 Mb for a TARGETED assay, so
+a smaller panel reports a proportionally low TMB. Set it alongside
+.BR \-\-estimate\-tmb .
+.TP
+.BI \-\-tumour\-site " INT"
+PCGR tumour\-site code.
+.TP
+.B \-\-tumour\-only
+No matched normal: apply PCGR's germline\-filtering heuristics.
+.TP
+.B \-\-lift\-tags
+Copy FORMAT DP/AF into INFO tags before running PCGR and forward the names
+automatically. Writes a new VCF; the input is left untouched.
+.TP
+.BI \-\-lift\-tumour\-sample " NAME"
+.TQ
+.BI \-\-lift\-normal\-sample " NAME"
+Sample names for the transform, when the VCF carries no
+.I ##tumor_sample
+header to read them from. A single\-sample VCF needs neither.
+.TP
+.BI \-\-tumor\-dp\-tag " TAG"
+.TQ
+.BI \-\-tumor\-af\-tag " TAG"
+.TQ
+.BI \-\-control\-dp\-tag " TAG"
+.TQ
+.BI \-\-control\-af\-tag " TAG"
+INFO tag names for depth and allele fraction, for a VCF you transformed
+yourself. Unnecessary with
+.BR \-\-lift\-tags .
+.TP
+.B \-\-pcgr\-legacy\-v1
+.TQ
+.BI \-\-pcgr\-extra\-args " STRING"
+.TQ
+.BI \-\-log " FILE"
+.TQ
+.B \-\-dry\-run
+As above;
+.B \-\-log
+appends command output to a file.
+.PP
+Exit status is three\-valued here:
+.B 0
+success,
+.B 1
+PCGR ran and failed,
+.B 2
+PCGR was skipped (not installed, or bundle missing), so a caller can tell the
+two apart.
+.
+.SS pipeline_orchestrator.py \(em stage chaining
+.TP
+.BI \-\-stage1\-args " ARGS"
+Arguments forwarded to
+.BR fastq_qc_clean.py ,
+as one quoted string. Optional when a QC handoff is supplied instead.
+.TP
+.B \-\-skip\-stage1
+Do not run QC. Requires
+.B \-\-qc\-manifest
+or
+.BR \-\-qc\-output\-dir .
+Takes precedence over
+.BR \-\-stage1\-args .
+.TP
+.BI \-\-stage2\-args " ARGS"
+Arguments forwarded to
+.BR align_reads.py .
+Omit to skip alignment entirely.
+.TP
+.B \-\-skip\-stage2
+Skip alignment; the QC manifest goes straight to variant calling.
+.TP
+.BI \-\-stage3\-args " ARGS"
+Arguments forwarded to
+.BR comprehensive_variant_calling.py .
+Required. Do
+.I not
+pass
+.B \-\-manifest
+here; the orchestrator appends it, along with
+.B \-\-input\-dir
+and, when stage 2 ran,
+.B \-\-skip\-steps align
+and
+.BR \-\-aligned\-dir .
+.TP
+.BI \-\-qc\-manifest " FILE"
+Reuse this existing QC manifest rather than running stage 1.
+.TP
+.BI \-\-qc\-output\-dir " DIR"
+Reuse the newest
+.I run_manifest_*.json
+found in this directory.
+.TP
+.B \-\-dry\-run
+Print each stage command without running it.
+.TP
+.BI \-\-log\-dir " DIR"
+Where the orchestrator writes its JSON report. Default:
+.IR pipeline_logs .
+.
+.SH PIPELINE STAGES
+.B comprehensive_variant_calling.py
+runs twelve steps. The names accepted by
+.B \-\-skip\-steps
+fall into two groups, which behave differently when skipped.
+.PP
+Skipping one of these reuses the previous stage's artefact, which must already
+exist on disk:
+.RS 4
+.TP
+.B qc
+Use the input FASTQs as if already cleaned. Implied by
+.BR \-\-manifest .
+.TP
+.B align
+Reuse
+.IR <aligned\-dir>/<sample>.sorted.bam .
+Both the BAM and its .bai must be present or the run aborts.
+.TP
+.B dedup
+Feed the aligned BAM onward unchanged.
+.TP
+.B bqsr
+Feed the duplicate\-marked BAM onward unchanged.
+.RE
+.PP
+Skipping one of these simply omits the work:
+.RS 4
+.TP
+.B mutect2
+Do not call variants.
+.TP
+.B contamination
+Do not estimate cross\-sample contamination. FilterMutectCalls then runs
+without the contamination and segmentation tables, exactly as it did before
+the step existed \(em assuming a fraction of zero rather than measuring one.
+Off anyway unless
+.B \-\-contamination\-resource
+is supplied.
+.TP
+.B filter
+Do not run FilterMutectCalls; the raw Mutect2 VCF is used downstream instead.
+Also suppresses read\-orientation modelling, whose only consumer is the filter.
+The
+.B \-\-min\-depth
+floor is part of filtering, not a step of its own, so skipping
+.B filter
+skips it too.
+.TP
+.B cosmic
+Do not annotate against COSMIC.
+.TP
+.B annotate
+Do not run SnpEff.
+.TP
+.B pcgr
+Do not build the PCGR clinical report. This step is off by default anyway
+unless
+.B \-\-pcgr\-refdata\-dir
+is supplied.
+.RE
+.PP
+Failure of
+.BR qc ", " align ", " dedup ", " bqsr ", " mutect2 " or " filter
+is fatal, since each produces an artefact the rest of the run needs.
+.BR contamination ", " cosmic ", " annotate " and " pcgr
+are enrichment only: they warn and the run continues.
+.
+.SH FILES
+.SS Produced by fastq_qc_clean.py
+.TP
+.I <output>/cleaned_fastq/<sample>_R{1,2}.clean.fastq.gz
+Cleaned reads.
+.TP
+.I <output>/fastp_reports/<sample>.fastp.{html,json}
+Per\-sample QC reports.
+.TP
+.I <output>/fastqc_raw/, <output>/fastqc_cleaned/
+FastQC output, when enabled.
+.TP
+.I <output>/run_manifest_<timestamp>.json
+The handoff manifest: tool versions, exact command lines, input checksums and
+per\-sample fastp metrics. Consumed by the later stages.
+.SS Produced by align_reads.py
+.TP
+.I <output>/aligned/<sample>.sorted.bam
+Sorted, indexed BAM. The
+.I aligned/
+subdirectory name is load\-bearing: it is what
+.B comprehensive_variant_calling.py
+expects for
+.BR \-\-aligned\-dir .
+.TP
+.I <output>/stats/<sample>.{flagstat,idxstats,stats}.txt
+Alignment statistics.
+.TP
+.I <output>/alignment_manifest_<timestamp>.json
+Run record.
+.SS Produced by comprehensive_variant_calling.py
+.TP
+.I <output>/{cleaned_fastq,aligned,dedup,bqsr}/
+Intermediates for each stage.
+.TP
+.I <output>/mutect2/<tumour>.mutect2.vcf.gz
+Raw somatic calls, plus
+.I .filtered.vcf.gz
+and
+.I .cosmic.vcf.gz
+as the corresponding stages run.
+.TP
+.I <output>/annotated/<tumour>.annotated.vcf
+SnpEff\-annotated calls: gene, consequence and predicted impact.
+.TP
+.I <output>/pcgr/
+PCGR clinical report (HTML plus machine\-readable TSV), when enabled.
+.TP
+.I <output>/{metrics,stats,logs}/
+Duplicate metrics, BQSR tables, alignment statistics, per\-sample logs.
+.TP
+.I <output>/pipeline_manifest_<timestamp>.json
+Full run record, including which steps completed.
+.SS Produced by pipeline_orchestrator.py
+.TP
+.I <log\-dir>/pipeline_report_<timestamp>.json
+Summary of the chained run. No command transcript is written; each stage's
+command is printed to the console as it starts.
+.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+A sample failed
+.RB ( fastq_qc_clean.py ", " align_reads.py :
+one or more samples), or a required stage failed
+.RB ( comprehensive_variant_calling.py ", " pipeline_orchestrator.py ).
+The orchestrator aborts the chain on the first failing stage, so a later stage
+never runs on half\-built input.
+.TP
+.B 2
+Invalid command line (argparse usage error).
+.
+.SH EXAMPLES
+Full three\-stage run with COSMIC annotation:
+.RS 4
+.nf
+pipeline_orchestrator.py \e
+    \-\-stage1\-args "\-i raw_fastqs/ \-o qc_out/ \-\-threads 16" \e
+    \-\-stage2\-args "\-o aligned_out/ \-\-reference hg38 \-\-threads 16 \-\-two\-pass" \e
+    \-\-stage3\-args "\-o results/ \-\-reference hg38 \-\-cosmic /data/COSMIC.vcf.gz \e
+                   \-\-dbsnp /data/dbsnp.vcf.gz \-\-threads 16"
+.fi
+.RE
+.PP
+QC straight into variant calling, no separate alignment stage:
+.RS 4
+.nf
+pipeline_orchestrator.py \e
+    \-\-stage1\-args "\-i raw_fastqs/ \-o qc_out/" \-\-skip\-stage2 \e
+    \-\-stage3\-args "\-o results/ \-\-reference hg38 \-\-cosmic /data/COSMIC.vcf.gz"
+.fi
+.RE
+.PP
+Reuse a previous QC run:
+.RS 4
+.nf
+pipeline_orchestrator.py \-\-skip\-stage1 \e
+    \-\-qc\-manifest qc_out/run_manifest_20260101T000000Z.json \e
+    \-\-stage3\-args "\-o results/ \-\-reference hg38"
+.fi
+.RE
+.PP
+Tumour/normal pair, run as individual stages:
+.RS 4
+.nf
+fastq_qc_clean.py \-i raw/ \-o qc_out/ \-\-merge\-lanes \-\-threads 16
+
+align_reads.py \-o aligned/ \-\-reference hg38 \-\-two\-pass \e
+    \-\-manifest qc_out/run_manifest_*.json
+
+comprehensive_variant_calling.py \-o results/ \-\-reference hg38 \e
+    \-\-manifest qc_out/run_manifest_*.json \e
+    \-\-skip\-steps align \-\-aligned\-dir aligned/aligned \e
+    \-\-tumour\-sample TUMOUR_01 \-\-normal\-sample NORMAL_01 \e
+    \-\-cosmic /data/COSMIC.vcf.gz \-\-dbsnp /data/dbsnp.vcf.gz
+.fi
+.RE
+.PP
+Tumour\-only calling with a germline resource:
+.RS 4
+.nf
+comprehensive_variant_calling.py \-i raw/ \-o results/ \-\-reference hg38 \e
+    \-\-tumour\-sample T1 \-\-tumour\-r1 T1_R1_001.fastq.gz \e
+    \-\-tumour\-r2 T1_R2_001.fastq.gz \e
+    \-\-germline\-resource /data/gnomad.vcf.gz \-\-cosmic /data/COSMIC.vcf.gz
+.fi
+.RE
+.PP
+With a PCGR clinical report, lifting the depth/AF tags so the reported TMB is
+computed over filtered calls:
+.RS 4
+.nf
+comprehensive_variant_calling.py \-o results/ \-\-reference hg38 \e
+    \-\-manifest qc_out/run_manifest_*.json \e
+    \-\-cosmic /data/COSMIC.vcf.gz \-\-dbsnp /data/dbsnp.vcf.gz \e
+    \-\-pcgr\-refdata\-dir /data/pcgr_bundle \-\-vep\-dir /data/vep_cache \e
+    \-\-pcgr\-assay TARGETED \-\-pcgr\-lift\-tags
+.fi
+.RE
+.PP
+Resume an interrupted run, reusing whatever finished. Pass the SAME arguments
+as the interrupted run \(em
+.B \-\-resume
+refuses to proceed if they differ:
+.RS 4
+.nf
+comprehensive_variant_calling.py \-o results/ \-\-reference hg38 \e
+    \-\-manifest qc_out/run_manifest_*.json \e
+    \-\-cosmic /data/COSMIC.vcf.gz \-\-dbsnp /data/dbsnp.vcf.gz \e
+    \-\-resume
+.fi
+.RE
+.PP
+Report on an existing VCF without re\-running the pipeline:
+.RS 4
+.nf
+pcgr_report.py \-\-input\-vcf results/mutect2/T1.mutect2.filtered.vcf.gz \e
+    \-\-output\-dir results/pcgr \-\-sample\-id T1 \e
+    \-\-pcgr\-refdata\-dir /data/pcgr_bundle \-\-vep\-dir /data/vep_cache \e
+    \-\-assay TARGETED \-\-tumour\-only \-\-lift\-tags
+.fi
+.RE
+.PP
+Preview every command without running anything. A dry run performs no
+downloads, no lane concatenation and no tool execution:
+.RS 4
+.nf
+comprehensive_variant_calling.py ... \-\-dry\-run
+.fi
+.RE
+.
+.SH DIAGNOSTICS
+Messages are prefixed by severity:
+.B [INFO]
+progress,
+.B [WARN]
+non\-fatal,
+.B [SKIP]
+a step deliberately not run,
+.B [DRY RUN]
+work suppressed by
+.BR \-\-dry\-run ,
+.B [ERROR]
+a failure that does not stop the run, and
+.B [FATAL]
+a failure that does.
+.PP
+Two warnings are worth watching for. When a
+.B \-\-tumour\-sample
+or
+.B \-\-normal\-sample
+name is not present in the manifest, the tools fall back to alphabetical order
+and emit a
+.BR [WARN] :
+without it you may silently analyse the wrong sample as the tumour. When
+lane\-split files are detected but
+.B \-\-merge\-lanes
+was not given,
+.B fastq_qc_clean.py
+warns that each lane is being processed as a separate sample.
+.
+.SH REQUIREMENTS
+Python 3.8 or newer, plus these tools on
+.IR PATH :
+.BR fastp (1)
+and
+.BR fastqc (1)
+for stage 1;
+.BR bwa\-mem2 (1)
+and
+.BR samtools (1)
+for alignment;
+.B gatk
+(version 4 or newer) for duplicate marking, BQSR and Mutect2. Optionally
+.BR bcftools (1)
+for COSMIC annotation and VCF statistics,
+.B snpEff
+for gene annotation, and
+.B pcgr
+(plus its reference data bundle and a VEP cache) for the clinical report;
+where these are absent the corresponding step is skipped with a warning
+rather than failing.
+.PP
+.B The Java version matters, and
+.B gatk \-\-version
+.B will not tell you.
+GATK's Spark tools \(em which
+.B comprehensive_variant_calling.py
+uses for duplicate marking \(em cannot run on JDK 24 or newer: JEP 486 made
+.I Subject.getSubject()
+throw unconditionally, and Hadoop calls it while Spark builds its context, so
+step 3 dies with
+.I UnsupportedOperationException: getSubject is not supported
+after alignment has already run. No flag rescues it;
+.B \-Djava.security.manager=allow,
+the JDK 18\(en23 workaround, is itself rejected from 24 on. SnpEff 5.4
+meanwhile requires JDK 21 or newer, so the usable window is 21\(en23. Check
+with
+.B java \-version
+rather than
+.BR "gatk \-\-version" ,
+which passes either way.
+.PP
+BWA\-MEM2 needs roughly 32 GB of RAM to align against hg38, and building its
+index takes one to two hours. SnpEff needs a heap far larger than its
+launcher's 1 GB default for hg38; see
+.BR \-\-snpeff\-memory .
+.B \-\-dry\-run
+requires none of these tools to be installed.
+.
+.SH CAVEATS
+.TP
+.B \-\-merge\-lanes means different things per tool
+In
+.B fastq_qc_clean.py
+it is a real toggle, off by default, and the resulting sample name
+.I keeps
+the lane token
+.RI ( S1_L001 ).
+In
+.BR comprehensive_variant_calling.py 's
+auto\-discover mode lanes are always merged and the name
+.I drops
+it
+.RI ( S1 ).
+Pointed at the same directory without the flag, the two tools therefore derive
+different sample names. In the orchestrated flow this does not arise, because
+stage 3 always runs from a manifest.
+.TP
+.B Stage 3 resumes only when asked
+.B fastq_qc_clean.py
+and
+.B align_reads.py
+skip samples whose output already exists unless
+.B \-\-overwrite
+is given.
+.B comprehensive_variant_calling.py
+does the same only under
+.BR \-\-resume ,
+never by default. The asymmetry is deliberate: a stage\-3 artefact depends on
+the reference, the known\-sites resources and the filter thresholds, so
+silently reusing a BQSR BAM built with a different
+.B \-\-dbsnp
+would assemble a call set out of two different analyses. For the same reason
+.B \-\-resume
+compares the current parameters against the previous run's manifest and
+refuses to proceed when they differ, unless
+.B \-\-resume\-force
+says otherwise.
+.TP
+.B Targeted panels need \-\-intervals
+Nothing restricts calling to the capture regions unless you say so. Given no
+.BR \-\-intervals ,
+Mutect2 traverses the whole genome and calls on the stray off\-target reads
+every capture protocol leaves behind. Measured on a 4.5 Mb panel: 635,414 raw
+candidates and 127,081 PASS calls unrestricted, against 20,761 and 1,464 with
+the target BED \(em the difference between a call set you can read and one you
+cannot. Neither
+.B \-\-intervals
+nor
+.B \-\-min\-depth
+nor
+.B \-\-min\-allele\-fraction
+is on by default, because guessing a target region or a depth cutoff for
+someone else's assay would be worse than doing nothing.
+.TP
+.B \-\-auto\-discover assumes ONE patient per directory
+The first pair found becomes the tumour and the second becomes that tumour's
+MATCHED NORMAL; anything after is ignored. Nothing warns about either. Point
+it at a directory holding two patients and Mutect2 subtracts one person's
+genome from another's: their differing germline variants are reported as
+somatic, their shared real mutations vanish, and the output looks entirely
+ordinary \(em a clinical reporter will tier it without complaint. Give each
+patient its own directory, or name the samples explicitly with
+.BR \-\-tumour\-sample ,
+.BR \-\-tumour\-r1 ,
+.BR \-\-tumour\-r2 ,
+and use
+.B \-\-normal\-sample
+only for a genuine matched normal from the SAME person. The
+.B webapp/
+front end refuses an ambiguous directory outright and offers a batch mode
+instead; this command does not.
+.TP
+.B Large insertions are usually artefacts, not variants
+An insertion that reverse\-complement matches its own flanking reference is a
+library foldback, not a variant. These survive every likelihood\-based filter
+\(em the reads are real and map cleanly \(em and on panel data they can
+dominate the frameshift calls, producing convincing oncogenic findings in
+BRCA1, BRCA2 and PALB2. See
+.BR \-\-foldback\-min\-match ,
+which is on by default. If insertions greatly outnumber deletions in the PASS
+set, or most indels are longer than 10 bp, suspect this before biology.
+.TP
+.B PASS is not the same as real
+FilterMutectCalls applies no depth floor and no allele\-fraction floor of its
+own, so a variant standing on two reads can PASS. On panel data, PCR\-slippage
+indels can outnumber genuine SNV calls in the PASS set. If the PASS indel
+count approaches or exceeds the SNV count, suspect artefacts before biology
+\(em starting with
+.BR \-\-foldback\-min\-match ,
+which removes them by mechanism and costs no SNVs, rather than
+.BR \-\-min\-allele\-fraction ,
+which is type\-blind and pays for indel cleanup with SNV sensitivity.
+.TP
+.B COSMIC and reference builds must match
+COSMIC VCFs are build\-specific. Annotating hg38 calls with an hg19 COSMIC file
+fails on coordinate mismatches.
+.TP
+.B PCGR's TMB is unfiltered unless you lift the depth/AF tags
+PCGR reads depth and allele fraction from
+.I INFO
+tags. GATK Mutect2 writes DP, AD and AF as per\-sample
+.I FORMAT
+fields instead, so by default PCGR has nothing to filter on: it still
+produces a report, but the TMB is computed over unfiltered calls and reads
+high. Pass
+.B \-\-pcgr\-lift\-tags
+.RB ( \-\-lift\-tags
+for the standalone tool) to copy those FORMAT values into INFO tags
+.IR TDP / TAF
+(and
+.IR NDP / NAF
+for the normal) and have the tag names forwarded to PCGR automatically. A new
+VCF is written into the report directory; the called VCF is never modified.
+Multiallelic records contribute only their first ALT and are counted in a
+warning \(em split them with
+.B bcftools norm \-m\-any
+first if that matters for your TMB.
+.TP
+.B PCGR does not read the SnpEff annotation
+PCGR runs its own Ensembl VEP annotation, so although it executes after
+SnpEff in pipeline order it is handed the filtered (or COSMIC\-annotated) call
+set rather than the SnpEff output.
+.
+.SH SEE ALSO
+.BR fastp (1),
+.BR fastqc (1),
+.BR bwa\-mem2 (1),
+.BR samtools (1),
+.BR bcftools (1),
+.BR multiqc (1)
+.PP
+GATK documentation:
+.UR https://gatk.broadinstitute.org
+.UE .
+COSMIC:
+.UR https://cancer.sanger.ac.uk/cosmic
+.UE .
+.PP
+Each script also carries a DEBUGGING NOTES section in its module docstring
+covering behaviour that is easy to misread from the outside; run
+.B "python3 <script> \-\-help"
+for the authoritative option list.
