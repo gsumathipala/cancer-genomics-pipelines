@@ -171,3 +171,13 @@ Specifically not yet established:
 
 Treat the outputs as research-grade. Clinical deployment needs a validation
 set, orthogonal confirmation, and a matched normal.
+
+---
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). The pipeline orchestrates third-party tools
+(GATK, BWA-MEM2, fastp, samtools, bcftools, SnpEff, PCGR, Ensembl VEP) and the
+reference databases it downloads, each of which carries **its own licence and
+terms**. COSMIC in particular requires a licence for commercial use. The MIT
+grant here covers this code, not those.
