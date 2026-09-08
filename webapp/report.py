@@ -227,6 +227,9 @@ def build_report(patient, run, output_dir, pdf_path):
         ("Germline resource", params.get("germline_resource")),
         ("Panel of normals", params.get("panel_of_normals")),
         ("Contamination resource", params.get("contamination_resource")),
+        ("Tumour site", params.get("pcgr_tumour_site_label")
+         or ("not specified" if not params.get("pcgr_tumour_site")
+             else params.get("pcgr_tumour_site"))),
         ("Target intervals", params.get("intervals")),
         ("Minimum depth", params.get("min_depth")),
         ("Panel size for TMB (Mb)", params.get("pcgr_target_size_mb")),

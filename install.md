@@ -493,6 +493,14 @@ own assay — every tool it needs is already installed or one conda package away
 Note that the panel of normals used by Mutect2 is a different artefact and does
 not serve this purpose.
 
+**Naming the tumour site changes the tiers.** PCGR ranks actionability against
+the tissue: the same variant can be predictive in one site and only oncogenic
+in another, so the site decides which evidence counts as on-label. The form
+offers all 31 of PCGR's sites, and **"Any / not specified" (code 0) is the
+default** — a legitimate choice that reports every tier without asserting a
+tissue nobody confirmed. On the command line it is `--pcgr-tumour-site <code>`.
+The chosen site is recorded in the run record, by name rather than by code.
+
 **MSI needs `--msi-models`, not PCGR.** MSIsensor2 scores microsatellite
 instability from the tumour BAM alone, which is the only route to an MSI answer
 on a targeted panel. The installer fetches the hg38 models

@@ -116,7 +116,68 @@ def new_run():
                            roots=app.config["ALLOWED_ROOTS"],
                            default_runs=app.config["RUNS_DIR"],
                            defaults=dict(discover_defaults(),
-                                         **ANALYSIS_TOGGLES))
+                                         **ANALYSIS_TOGGLES),
+                           tumour_sites=TUMOUR_SITES)
+
+
+# ---------------------------------------------------------------------------
+# Tumour site
+# ---------------------------------------------------------------------------
+# PCGR tiers actionability against the tumour site: the same variant can be
+# predictive in one tissue and merely oncogenic in another, so naming the site
+# changes which evidence PCGR considers on-label. Code 0 is "Any", which is
+# the honest default -- it keeps the site OPEN and reports every tier without
+# claiming a tissue nobody specified.
+#
+# Copied from PCGR 2.3.2 (pcgr.pcgr_vars.tsites). It lives in the pcgr conda
+# environment, which this app cannot import from, so it is duplicated here.
+# Regenerate after a PCGR upgrade with:
+#   conda run -n pcgr python -c \
+#     "from pcgr import pcgr_vars; print(pcgr_vars.tsites)"
+TUMOUR_SITES = [
+    (0, "Any / not specified"),
+    (1, "Adrenal Gland"),
+    (2, "Ampulla of Vater"),
+    (3, "Biliary Tract"),
+    (4, "Bladder/Urinary Tract"),
+    (5, "Bone"),
+    (6, "Breast"),
+    (7, "Cervix"),
+    (8, "CNS/Brain"),
+    (9, "Colon/Rectum"),
+    (10, "Esophagus/Stomach"),
+    (11, "Eye"),
+    (12, "Head and Neck"),
+    (13, "Kidney"),
+    (14, "Liver"),
+    (15, "Lung"),
+    (16, "Lymphoid"),
+    (17, "Myeloid"),
+    (18, "Ovary/Fallopian Tube"),
+    (19, "Pancreas"),
+    (20, "Peripheral Nervous System"),
+    (21, "Peritoneum"),
+    (22, "Pleura"),
+    (23, "Prostate"),
+    (24, "Skin"),
+    (25, "Soft Tissue"),
+    (26, "Testis"),
+    (27, "Thymus"),
+    (28, "Thyroid"),
+    (29, "Uterus"),
+    (30, "Vulva/Vagina"),
+]
+
+TUMOUR_SITE_CODES = {code for code, _label in TUMOUR_SITES}
+
+
+def tumour_site_label(code):
+    """Human-readable site for a code, for the run record."""
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        return None
+    return dict(TUMOUR_SITES).get(code)
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +351,18 @@ def submit():
             except ValueError as exc:
                 errors.append(f"{optional.replace('_', ' ')}: {exc}")
 
+    # Validate the site code rather than forwarding whatever was posted:
+    # PCGR rejects an out-of-range value, and it does so after the pipeline
+    # has already run.
+    if form.get("pcgr_tumour_site"):
+        try:
+            if int(form["pcgr_tumour_site"]) not in TUMOUR_SITE_CODES:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append(
+                f"tumour site must be one of PCGR's codes 0-"
+                f"{max(TUMOUR_SITE_CODES)}; 0 leaves it unspecified")
+
     if not patient.get("patient_id") and not patient.get("specimen_id"):
         errors.append("Give at least a patient/MRN or a specimen ID, so the "
                       "report can be attributed to something")
@@ -332,11 +405,16 @@ def submit():
                                roots=app.config["ALLOWED_ROOTS"],
                                default_runs=app.config["RUNS_DIR"],
                                defaults=dict(discover_defaults(),
-                                             **ANALYSIS_TOGGLES)), 400
+                                             **ANALYSIS_TOGGLES),
+                               tumour_sites=TUMOUR_SITES), 400
 
     merged = dict(form)
     merged.update(resolved)
     merged["auto_applied_resources"] = " ".join(auto_applied)
+    # Store the label too: a run record reading "Tumour site: 15" tells a
+    # later reader nothing without the codebook.
+    merged["pcgr_tumour_site_label"] = tumour_site_label(
+        merged.get("pcgr_tumour_site"))
     # The pipeline runs in the cancer_pipeline environment, not in whichever
     # interpreter is serving this app: launching it with sys.executable is
     # why a webapp started outside that env failed with

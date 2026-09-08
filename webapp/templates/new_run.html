@@ -153,6 +153,14 @@
         <input name="pcgr_refdata_dir" value="{{ (form or {}).get('pcgr_refdata_dir') or (defaults or {}).get('pcgr_refdata_dir','') }}"
                placeholder="leave blank to skip PCGR"></label>
       <label><span>VEP cache</span><input name="vep_dir" value="{{ (form or {}).get('vep_dir') or (defaults or {}).get('vep_dir','') }}"></label>
+      <label><span>Tumour site</span>
+        <select name="pcgr_tumour_site">
+          {% for code, label in (tumour_sites or []) %}
+            <option value="{{ code }}"
+              {% if (form or {}).get('pcgr_tumour_site')|string == code|string %}selected{% endif %}>
+              {{ label }}</option>
+          {% endfor %}
+        </select></label>
       <label><span>Assay</span>
         <select name="pcgr_assay">
           {% for a in ['TARGETED','WES','WGS'] %}
@@ -187,6 +195,11 @@
       nothing. A dedicated caller such as MSIsensor2 is what a panel
       needs.</span>
     </label>
+    <p class="hint">The tumour site steers actionability: the same variant can
+      be predictive in one tissue and only oncogenic in another, so naming the
+      site changes which evidence PCGR treats as on-label. Leaving it
+      <em>Any&nbsp;/ not specified</em> is a legitimate choice &mdash; the
+      report then covers every tier without asserting a tissue.</p>
     <p class="hint">PCGR runs after the pipeline, in its own conda
       environment &mdash; it cannot run inside the pipeline's. If the webapp
       cannot find that environment, set <code>PCGR_PYTHON</code> to its
