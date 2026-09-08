@@ -118,6 +118,7 @@ webapp/                           Flask front end (patient details, batch, clean
 
 install.md                        manual install, and the reference the installer follows
 DATABASE_SETUP.md                 what each database is for, and where it goes
+CNV_SCOPE.md                      copy-number: designed, not built — read before starting it
 ```
 
 **Keep the Python files in one directory.** The orchestrator locates its
@@ -169,6 +170,10 @@ Specifically not yet established:
 - **The tumour–normal path has never processed real data.** It exists and is
   exercised by the dry-run tests, but that is not the same thing.
 - **SNV and indel only.** No copy-number, structural-variant or fusion calling.
+  Copy number is scoped in [CNV_SCOPE.md](CNV_SCOPE.md) but not implemented: it
+  waits on 10+ normals sequenced on the same assay, in the same lab, at the
+  same fixation state. Every tool it needs is already present or one conda
+  package away.
 - **No tumour purity or HRD scoring**, so variant allele fractions are
   uncorrected and clonality is not claimed.
 - **Tumour-only TMB is unreliable** — PCGR says so itself — and should not be
