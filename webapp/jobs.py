@@ -698,6 +698,7 @@ def build_pipeline_argv(python_exe, script, form):
                       ("--germline-resource", "germline_resource"),
                       ("--panel-of-normals", "panel_of_normals"),
                       ("--contamination-resource", "contamination_resource"),
+                      ("--msi-models", "msi_models"),
                       ("--intervals", "intervals")):
         if form.get(key):
             argv += [flag, form[key]]

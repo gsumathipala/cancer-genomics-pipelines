@@ -114,6 +114,7 @@
       <label><span>Germline resource</span><input name="germline_resource" value="{{ (form or {}).get('germline_resource') or (defaults or {}).get('germline_resource','') }}"></label>
       <label><span>Panel of normals</span><input name="panel_of_normals" value="{{ (form or {}).get('panel_of_normals') or (defaults or {}).get('panel_of_normals','') }}"></label>
       <label><span>Contamination resource</span><input name="contamination_resource" value="{{ (form or {}).get('contamination_resource') or (defaults or {}).get('contamination_resource','') }}"></label>
+      <label><span>MSI models (MSIsensor2)</span><input name="msi_models" value="{{ (form or {}).get('msi_models') or (defaults or {}).get('msi_models','') }}"></label>
       <label><span>Target intervals (BED)</span><input name="intervals" value="{{ (form or {}).get('intervals','') }}"></label>
       <label><span>Interval padding (bp)</span><input name="interval_padding" type="number" min="0" value="{{ (form or {}).get('interval_padding','') }}"></label>
       <label><span>Minimum depth</span><input name="min_depth" type="number" min="0" value="{{ (form or {}).get('min_depth','') }}"></label>
@@ -134,6 +135,9 @@
       reads &mdash; tens of thousands of spurious PASS calls on a typical
       panel. Padding of 50&ndash;100&nbsp;bp is usual; a minimum depth of
       around 20 tags thin calls, which GATK never does on its own.</p>
+    <p class="hint">Clear the MSI models path to omit MSI scoring. It is the
+      only route to an MSI answer on a targeted panel &mdash; PCGR restricts
+      its own MSI prediction to WGS/WES tumour&ndash;normal runs.</p>
     <p class="hint">The contamination resource is a common-SNP VCF such as
       small_exac_common_3.hg38.vcf.gz. Without it the run cannot estimate
       cross-sample contamination, so filtering assumes a fraction of zero
@@ -141,6 +145,7 @@
       runs.</p>
   </section>
 
+  <input type="hidden" name="form_rendered" value="1">
   <section class="card">
     <h2>Clinical report (PCGR)</h2>
     <div class="fields">
@@ -177,8 +182,10 @@
       {% if (form or {}).get('pcgr_estimate_msi') %}checked{% endif %}>
       Predict microsatellite instability
       <span class="hint inline">&mdash; PCGR accepts this only for WGS/WES
-      tumour&ndash;normal runs; on a panel or tumour-only query it warns and
-      skips.</span>
+      tumour&ndash;normal runs. On a targeted panel or a tumour-only query it
+      logs a warning and omits the analysis, so ticking this there does
+      nothing. A dedicated caller such as MSIsensor2 is what a panel
+      needs.</span>
     </label>
     <p class="hint">PCGR runs after the pipeline, in its own conda
       environment &mdash; it cannot run inside the pipeline's. If the webapp

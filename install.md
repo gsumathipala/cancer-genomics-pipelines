@@ -20,7 +20,7 @@ package-manager conflicts.
 | GATK (4.x) | comprehensive_variant_calling.py | MarkDuplicatesSpark, BQSR, Mutect2, FilterMutectCalls | `gatk4` |
 | bcftools   | comprehensive_variant_calling.py | COSMIC annotation, overlap counts, stats | `bcftools` |
 | SnpEff     | comprehensive_variant_calling.py | Gene/consequence annotation      | `snpeff` |
-| PCGR       | (optional) pcgr_report.py, comprehensive_variant_calling.py step 11 | Clinical report: actionability tiers; TMB / MSI / signatures only if the matching `--pcgr-estimate-*` flag is passed | `pcgr` |
+| PCGR       | (optional) pcgr_report.py, comprehensive_variant_calling.py step 12 | Clinical report: actionability tiers; TMB / MSI / signatures only if the matching `--pcgr-estimate-*` flag is passed | `pcgr` |
 | multiqc    | (optional, suggested by fastq_qc_clean.py) | Aggregate reports          | `multiqc` |
 | Flask      | (optional) webapp/ only            | Web interface                       | `flask` (pip or conda) |
 | wget/curl  | system (reference auto-download)   | Download hg38 reference from Broad | system package |
@@ -48,7 +48,7 @@ The two environments must be **siblings**: PCGR locates `pcgrr` as
 `--pcgrr_conda <name>` if you rename one.
 
 > **PCGR cannot be run from the pipeline environment.** With
-> `cancer_pipeline` active, `pcgr` is not on `PATH`, so step 11 skips with a
+> `cancer_pipeline` active, `pcgr` is not on `PATH`, so step 12 skips with a
 > warning. Prepending PCGR's `bin/` to `PATH` is *not* a workaround — PCGR
 > resolves its VEP plugin directory from `$CONDA_PREFIX/share`, so a real run
 > then fails with `FileNotFoundError: No ensembl-vep directories found`.
@@ -179,7 +179,7 @@ export PATH="$PWD/snpEff:$PATH"     # add to ~/.bashrc
 ## 4. SnpEff (and GATK) data setup
 
 SnpEff needs its genome database before `comprehensive_variant_calling.py`
-step 10 will run (the script skips keyed on the `snpEff` binary, but annotation
+step 11 will run (the script skips keyed on the `snpEff` binary, but annotation
 fails without the DB):
 
 ```bash
@@ -377,13 +377,15 @@ are only found next to their files: VCF → `<name>.vcf.gz.tbi`, BAM →
 Minimal sets to keep the download volume sane:
 
 - **Tumour-only run (just calling):** reference + gnomAD (+ SnpEff hg38 for
-  step 10).
+  step 11).
 - **+ COSMIC annotation:** add the COSMIC VCF.
 - **+ BQSR:** add dbSNP and/or Mills indels.
 - **+ contamination estimate (step 7):** add `small_exac_common_3.hg38.vcf.gz`
   (1.3 MB — the cheapest useful addition on this list).
+- **+ MSI (step 8):** add the MSIsensor2 `models_hg38` directory. The only
+  route to an MSI answer on a panel; PCGR omits it.
 
-The pipeline has **12 steps**. Nothing here is required to reach a call set;
+The pipeline has **13 steps**. Nothing here is required to reach a call set;
 each missing resource disables one step and says so.
 
 ## 7. Verification (post-install)
@@ -485,6 +487,39 @@ notices it was dropped.
 The two things it cannot supply for you are the target BED (`--intervals`,
 which is your assay vendor's file) and a matched normal.
 
+**MSI needs `--msi-models`, not PCGR.** MSIsensor2 scores microsatellite
+instability from the tumour BAM alone, which is the only route to an MSI answer
+on a targeted panel. The installer fetches the hg38 models
+(`~/data/msisensor2/models_hg38`, 251 MB) and the web form fills the path in.
+Clear it to omit MSI. Upstream calls MSI-H at **≥20%** for tumour-only data —
+the 3.5% figure belongs to the older paired caller and would call almost
+anything unstable. The site count matters as much as the score: a panel carries
+only the microsatellites inside its targets, and the pipeline flags a run with
+fewer than 200 covered loci.
+
+**On FFPE material, keep the read-orientation model.** Formalin deaminates
+cytosine, producing C>T and G>A changes that are damage rather than biology,
+and step 6 exists to catch them — on the FFPE panel this was built against it
+removed 3,222 calls, 1,824 of them C>T/G>A. Fixation also fragments the DNA,
+which is why FFPE runs show short inserts and foldback artefacts. Residual
+damage still reaches PASS: 59% of C>T/G>A PASS calls sat below 10% VAF against
+37% of everything else, so `--min-allele-fraction` earns its place on FFPE.
+
+**TMB, MSI and signature fitting are each opt-in and each can be switched off.**
+PCGR computes none of them unless asked and says nothing when it has not been,
+so the form offers all three as checkboxes: TMB and signatures start ticked,
+MSI starts unticked. Unticking any of them genuinely omits it.
+
+Two caveats the job page will also tell you:
+
+* **MSI does nothing on a panel.** PCGR restricts it to WGS/WES
+  tumour-control runs and logs `MSI status prediction can be applied for
+  WGS/WES tumor-control assays only` before skipping. A targeted panel needs a
+  dedicated caller such as MSIsensor2, which this pipeline does not yet carry.
+* **Tumour-only TMB is unreliable** — PCGR warns about it directly. Residual
+  germline variants inflate it, so treat the figure as internal QC rather than
+  a reportable result until a matched normal is available.
+
 **Several samples in one directory: choose what they are.** `--auto-discover`
 on its own treats the first pair as the tumour and the **second as that
 tumour's matched normal**, ignoring the rest — silently. Two patients in one
@@ -570,7 +605,7 @@ are routinely tens of gigabytes.
 - **PCGR bundle mismatch**: the commonest PCGR failure is a reference data
   bundle whose version does not match the installed `pcgr`. Check the PCGR
   release notes for the bundle that pairs with your version. PCGR is optional
-  throughout: if it or its bundle is missing, step 11 is skipped with a
+  throughout: if it or its bundle is missing, step 12 is skipped with a
   warning and the rest of the run is unaffected.
 - **PCGR reports a suspiciously high TMB**: PCGR filters on depth/allele
   fraction taken from *INFO* tags, but Mutect2 writes those as per-sample
@@ -604,12 +639,13 @@ partial install can be detected rather than discovered later at runtime.
 | 2 | `environment.yml` env | yes | ~3–5 GB | `conda activate cancer_pipeline` |
 | 3 | Pipeline scripts | yes | <1 MB | `python comprehensive_variant_calling.py --help` |
 | 4 | Reference genome (hg38) + indices | yes | 3.1 GB + 17 GB indices | `ls hg38.fa.fai hg38.dict hg38.fa.bwt.2bit.64` |
-| 5 | SnpEff database | for step 10 | ~450 MB | `snpEff databases \| grep -w hg38` |
+| 5 | SnpEff database | for step 11 | ~450 MB | `snpEff databases \| grep -w hg38` |
 | 6 | dbSNP / known indels | for BQSR (step 4) | ~1.6 GB | file exists + `.tbi` |
 | 7 | gnomAD germline resource | for tumour-only calling | ~3 GB | file exists + `.tbi` |
-| 8 | COSMIC VCF | for step 9 | ~1 GB | file exists + index |
+| 8 | COSMIC VCF | for step 10 | ~1 GB | file exists + index |
 | 8a | `small_exac_common_3.hg38.vcf.gz` | for step 7 (contamination) | ~1.3 MB | file exists + `.tbi` |
-| 9 | PCGR (2 envs) + bundle + VEP cache | for step 11 | ~6 GB envs + 31 GB data | `conda activate pcgr && pcgr --version` |
+| 8b | MSIsensor2 models `models_hg38` | for step 8 (MSI) | 251 MB | directory of ~2,800 files |
+| 9 | PCGR (2 envs) + bundle + VEP cache | for step 12 | ~6 GB envs + 31 GB data | `conda activate pcgr && pcgr --version` |
 | 10 | Flask | for `webapp/` only | ~10 MB | `python -c "import flask"` |
 | 11 | Man page | cosmetic | <1 MB | `man cancer-dna-pipeline` |
 
@@ -687,6 +723,6 @@ python /path/to/comprehensive_variant_calling.py \
     --tumour-r2 fq/S_R2_001.fastq.gz --dry-run
 ```
 
-A successful dry run prints all **12** step banners and creates no BAMs or
+A successful dry run prints all **13** step banners and creates no BAMs or
 VCFs. Add `java -version` to the loop above: it is the check that catches an
 environment `gatk --version` will happily pass (see §7).

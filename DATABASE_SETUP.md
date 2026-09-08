@@ -124,6 +124,7 @@ Sizes are approximate.
 |----------|------|-------------------|
 | COSMIC coding mutations (~1 GB) | `--cosmic` | Step 9 annotation and overlap counts skipped |
 | `small_exac_common_3.hg38.vcf.gz` (1.3 MB) | `--contamination-resource` | Step 7 skipped; FilterMutectCalls then assumes **zero** contamination instead of measuring it |
+| MSIsensor2 `models_hg38` (251 MB) | `--msi-models` | Step 8 skipped, and there is **no MSI answer at all** — PCGR restricts its own MSI prediction to WGS/WES tumour-control runs |
 | dbSNP `Homo_sapiens_assembly38.dbsnp138.vcf.gz` (~10 GB) | `--dbsnp` | BQSR **silently skipped** |
 | Mills + 1000G gold indels (~20 MB) | `--known-indels` | BQSR skipped (same known-sites role) |
 | Panel of Normals `1000g_pon.hg38.vcf.gz` (~20 MB) | `--panel-of-normals` | No recurrent-artefact subtraction |
@@ -156,6 +157,8 @@ commands are in `install.md` §6.
     Cosmic_clean.vcf.gz                            114 MB  INFO stripped; unused
 └── small_exac_common_3.hg38.vcf.gz                1.3 MB  (+ .tbi)  contamination sites
 
+~/data/msisensor2/models_hg38/                     251 MB   MSIsensor2 models (2,829 files)
+
 ~/data/pcgr/20260620/data/grch38/                  7.3 GB   PCGR reference bundle
 ~/data/vep_cache/homo_sapiens/115_GRCh38/           24 GB   Ensembl VEP cache
 ```
@@ -178,6 +181,7 @@ python comprehensive_variant_calling.py \
                    ~/data/resources/hg38/Homo_sapiens_assembly38.known_indels.vcf.gz \
     --panel-of-normals ~/data/resources/hg38/1000g_pon.hg38.vcf.gz \
     --contamination-resource ~/data/resources/hg38/small_exac_common_3.hg38.vcf.gz \
+    --msi-models ~/data/msisensor2/models_hg38 \
     --cosmic ~/data/resources/hg38/Cosmic_GenomeScreensMutant_v103_GRCh38.chr.vcf.gz \
     --threads 32
 ```

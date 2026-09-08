@@ -114,7 +114,8 @@ def new_run():
                            patient_fields=PATIENT_FIELDS,
                            roots=app.config["ALLOWED_ROOTS"],
                            default_runs=app.config["RUNS_DIR"],
-                           defaults=discover_defaults())
+                           defaults=dict(discover_defaults(),
+                                         **ANALYSIS_TOGGLES))
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +138,9 @@ DEFAULT_RESOURCES = {
         f"{_DATA}/resources/hg38/Cosmic_GenomeScreensMutant_v103_GRCh38"
         f".chr.vcf.gz",
     "vep_dir": f"{_DATA}/vep_cache",
+    # Tumour-only MSI. PCGR omits MSI on a panel, so this is the only route
+    # to an MSI answer for a targeted assay.
+    "msi_models": f"{_DATA}/msisensor2/models_hg38",
 }
 
 # --known-indels takes several files, so it is kept apart from the map
@@ -169,10 +173,26 @@ def discover_defaults():
     indels = [p for p in DEFAULT_KNOWN_INDELS if os.path.exists(p)]
     if indels:
         found["known_indels"] = " ".join(indels)
-
-    found["pcgr_estimate_tmb"] = "on"
-    found["pcgr_estimate_signatures"] = "on"
     return found
+
+
+# Analysis toggles, not resources. They are checkboxes, and an unticked
+# checkbox is simply absent from the submission -- indistinguishable from a
+# field nobody filled in. Defaulting them the way paths are defaulted made
+# them impossible to switch OFF: unticking sent nothing, and the blank was
+# filled straight back in. They are kept separate, and only defaulted for a
+# submission that never rendered the form.
+ANALYSIS_TOGGLES = {
+    # A clinical report is the point of running this, so TMB and signature
+    # fitting start on.
+    "pcgr_estimate_tmb": "on",
+    "pcgr_estimate_signatures": "on",
+    # MSI starts off deliberately. PCGR honours it only for WGS/WES
+    # tumour-control runs; on a targeted or tumour-only query it warns and
+    # skips, so defaulting it on would promise a section the report will
+    # not contain.
+    "pcgr_estimate_msi": "",
+}
 
 
 def apply_resource_defaults(form):
@@ -199,6 +219,16 @@ def apply_resource_defaults(form):
         if not form.get(key):
             form[key] = value
             applied.append(key)
+
+    # Toggles are only defaulted for a submission that did not render the
+    # form -- an API call or a script. The form posts a marker, and when it
+    # is present the checkboxes are taken exactly as submitted, so unticking
+    # one actually turns it off.
+    if not form.get("form_rendered"):
+        for key, value in ANALYSIS_TOGGLES.items():
+            if value and not form.get(key):
+                form[key] = value
+                applied.append(key)
     return applied
 
 
@@ -251,7 +281,8 @@ def submit():
 
     for optional in ("cosmic", "dbsnp", "germline_resource",
                      "panel_of_normals", "contamination_resource",
-                     "intervals", "pcgr_refdata_dir", "vep_dir"):
+                     "msi_models", "intervals", "pcgr_refdata_dir",
+                     "vep_dir"):
         if form.get(optional):
             try:
                 resolved[optional] = safe_path(form[optional], must_exist=True)
@@ -299,7 +330,8 @@ def submit():
                                patient_fields=PATIENT_FIELDS,
                                roots=app.config["ALLOWED_ROOTS"],
                                default_runs=app.config["RUNS_DIR"],
-                               defaults=discover_defaults()), 400
+                               defaults=dict(discover_defaults(),
+                                             **ANALYSIS_TOGGLES)), 400
 
     merged = dict(form)
     merged.update(resolved)
@@ -437,6 +469,30 @@ def run_warnings(meta):
         notes.append(
             "No PCGR reference bundle, so no clinical report was produced -- "
             "only an annotated VCF.")
+
+    # Say so rather than leaving a blank section to be interpreted.
+    if not meta.get("pcgr_estimate_tmb"):
+        notes.append(
+            "Tumour mutational burden was not computed. PCGR omits the "
+            "section entirely rather than reporting zero.")
+    if not meta.get("pcgr_estimate_signatures"):
+        notes.append("Mutational signatures were not fitted.")
+    if not meta.get("msi_models"):
+        notes.append(
+            "No MSI scoring: --msi-models was not supplied. PCGR does not "
+            "cover this on a panel, so the report has no MSI answer at all.")
+    if meta.get("pcgr_estimate_msi") and (
+            meta.get("pcgr_assay") != "WGS" and
+            meta.get("pcgr_assay") != "WES" or not meta.get("normal_sample")):
+        notes.append(
+            "MSI was requested but PCGR restricts it to WGS/WES "
+            "tumour-control runs, so it was skipped. A panel needs a "
+            "dedicated caller such as MSIsensor2.")
+    if meta.get("pcgr_estimate_tmb") and not meta.get("normal_sample"):
+        notes.append(
+            "TMB was computed from a tumour-only call set. PCGR warns that "
+            "this is unreliable -- residual germline variants inflate it -- "
+            "so treat the figure as internal QC, not a reportable result.")
     return notes
 
 

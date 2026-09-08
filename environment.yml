@@ -77,6 +77,10 @@ dependencies:
   - gatk4>=4.2
   - bcftools
   - snpeff
+  # Microsatellite instability from the tumour BAM alone. PCGR cannot do
+  # this on a panel or a tumour-only run -- it restricts MSI to WGS/WES
+  # tumour-control queries and omits the section without saying so.
+  - msisensor2
 
   # --- optional but commonly wanted ------------------------------------
   - multiqc

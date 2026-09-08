@@ -22,8 +22,9 @@ WHAT IT INSTALLS
   4. GATK resource VCFs (dbSNP, Mills, known indels, gnomAD, PoN, ExAC)
   5. SnpEff hg38 database
   6. PCGR reference bundle + Ensembl VEP cache
-  7. COSMIC, if you supply the file (see COSMIC below)
-  8. the man page
+  7. MSIsensor2 models for tumour-only MSI scoring
+  8. COSMIC, if you supply the file (see COSMIC below)
+  9. the man page
 
 THE TRAPS THIS ENCODES
 ----------------------
@@ -147,6 +148,13 @@ VEP_RELEASE = "115"
 VEP_CACHE_URL = (f"https://ftp.ensembl.org/pub/release-{VEP_RELEASE}/"
                  f"variation/indexed_vep_cache/"
                  f"homo_sapiens_vep_{VEP_RELEASE}_GRCh38.tar.gz")
+
+# MSIsensor2's tumour-only mode needs a trained model directory, which the
+# conda package does NOT ship -- only the binary. The models live in the
+# upstream repository, so the whole tarball is fetched and one directory kept.
+MSI_MODELS_URL = ("https://codeload.github.com/niu-lab/msisensor2/"
+                  "tar.gz/refs/heads/master")
+MSI_MODELS_MEMBER = "msisensor2-master/models_hg38"
 
 PIPELINE_ENV = "cancer_pipeline"
 PCGR_ENV = "pcgr"
@@ -675,6 +683,47 @@ def step_pcgr_data(args):
     return ok
 
 
+def step_msi_models(args):
+    """
+    Install the MSIsensor2 models for tumour-only MSI scoring.
+
+    The conda package ships the binary only. Without these models the
+    tumour-only mode cannot run at all, and PCGR does not cover the gap:
+    it restricts MSI to WGS/WES tumour-control runs and omits the section
+    silently on anything else.
+
+    The upstream project publishes the models inside its git repository
+    rather than as a release asset, so the source tarball is fetched and a
+    single directory extracted from it. About 310 MB down, 251 MB kept.
+    """
+    dest = os.path.join(args.data_dir, "msisensor2")
+    marker = os.path.join(dest, "models_hg38")
+    if os.path.isdir(marker) and not args.force:
+        count = len(os.listdir(marker))
+        LOG.skip(f"MSI models present ({count} files)")
+        return True
+    if args.dry_run:
+        LOG.info(f"(dry run) would fetch {MSI_MODELS_URL}")
+        LOG.info(f"(dry run) would extract {MSI_MODELS_MEMBER} -> {marker}")
+        return True
+
+    os.makedirs(dest, exist_ok=True)
+    archive = os.path.join(dest, "msisensor2-master.tar.gz")
+    if not download(MSI_MODELS_URL, archive):
+        LOG.fail("could not fetch the MSIsensor2 models")
+        return False
+
+    LOG.info("extracting the hg38 models")
+    code, _ = run(["tar", "xzf", archive, "-C", dest,
+                   "--strip-components=1", MSI_MODELS_MEMBER], check=True)
+    _discard(archive)
+    if code != 0 or not os.path.isdir(marker):
+        LOG.fail("could not extract the MSIsensor2 models")
+        return False
+    LOG.ok(f"MSI models installed ({len(os.listdir(marker))} files)")
+    return True
+
+
 def step_cosmic(args):
     """
     Import a COSMIC VCF the operator downloaded, and fix its contig names.
@@ -784,7 +833,8 @@ def step_verify(args):
         return True
 
     ok = True
-    tools = ["fastp", "bwa-mem2", "samtools", "gatk", "bcftools", "snpEff"]
+    tools = ["fastp", "bwa-mem2", "samtools", "gatk", "bcftools", "snpEff",
+             "msisensor2"]
     missing = []
     for tool in tools:
         code, _ = env_run(PIPELINE_ENV, ["bash", "-lc",
@@ -853,6 +903,13 @@ def step_verify(args):
             LOG.fail(f"{label} missing ({path}) -- no clinical reports")
             ok = False
 
+    msi_models = os.path.join(args.data_dir, "msisensor2", "models_hg38")
+    if os.path.isdir(msi_models):
+        LOG.ok("MSIsensor2 models present")
+    else:
+        LOG.warn(f"MSI models missing ({msi_models}) -- step 8 will be "
+                 f"skipped. PCGR does not cover MSI on a panel.")
+
     # COSMIC stays a warning: it cannot be downloaded without an account,
     # so its absence is a licensing fact rather than a broken install.
     cosmic = [f for f in os.listdir(res_dir)
@@ -889,6 +946,7 @@ STEPS = [
     ("resources", "GATK resource VCFs", step_resources),
     ("snpeff", "SnpEff hg38 database", step_snpeff),
     ("pcgr-data", "PCGR bundle and VEP cache", step_pcgr_data),
+    ("msi-models", "MSIsensor2 models for tumour-only MSI", step_msi_models),
     ("cosmic", "Import and rename a COSMIC VCF", step_cosmic),
     ("man", "Install the man page", step_manpage),
     ("verify", "Verify the installation", step_verify),

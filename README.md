@@ -94,6 +94,7 @@ is the fastest way to tell whether an environment has drifted.
 | PCGR reference bundle | `~/data/pcgr/<release>/` | 7.3 GB |
 | Ensembl VEP cache | `~/data/vep_cache/` | 24 GB |
 | SnpEff database | inside the conda environment | 448 MB |
+| MSIsensor2 models | `~/data/msisensor2/models_hg38/` | 251 MB |
 
 Change the data location with `--data-dir`. The conda environments go wherever
 conda keeps its environments.
@@ -143,6 +144,10 @@ misleading when it goes wrong:
   into place. A truncated reference otherwise gets reused indefinitely by any
   check that only asks whether the file exists.
 - **COSMIC contig naming**, as above.
+- **MSIsensor2 ships no models.** The conda package is the binary only, so the
+  installer fetches the hg38 models from upstream. Without them, tumour-only
+  MSI cannot run at all — and PCGR does not cover the gap, because it restricts
+  MSI prediction to WGS/WES tumour–control runs.
 
 ---
 
@@ -168,6 +173,10 @@ Specifically not yet established:
   uncorrected and clonality is not claimed.
 - **Tumour-only TMB is unreliable** — PCGR says so itself — and should not be
   reported without a matched normal.
+- **On FFPE material**, keep step 6's read-orientation model: formalin
+  deaminates cytosine, and that step is what separates the resulting C>T/G>A
+  damage from biology. Residual damage still reaches PASS at low allele
+  fraction, so `--min-allele-fraction` earns its place.
 
 Treat the outputs as research-grade. Clinical deployment needs a validation
 set, orthogonal confirmation, and a matched normal.

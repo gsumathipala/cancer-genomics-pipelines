@@ -89,7 +89,7 @@ Chains the three stages into a single command, handling the manifest handoff
 between them.
 .TP
 .B pcgr_report.py
-Optional reporting step, invoked as step 11 of
+Optional reporting step, invoked as step 12 of
 .B comprehensive_variant_calling.py
 or run standalone. Wraps PCGR (Personal Cancer Genome Reporter) to turn a
 somatic VCF into a clinical interpretation report: therapeutic actionability
@@ -406,6 +406,20 @@ fraction of ZERO rather than measuring one, so real contamination goes
 undetected \(em which matters most in tumour\-only mode, where no matched
 normal can contradict a low\-VAF call.
 .TP
+.BI \-\-msi\-models " DIR"
+MSIsensor2 model directory for this genome build. Supplying it enables STEP 8,
+which scores microsatellite instability from the tumour BAM alone.
+.B PCGR will not do this on a panel:
+it restricts MSI prediction to WGS/WES tumour\-control runs and, on a targeted
+or tumour\-only query, logs a warning and omits the section \(em so
+.B \-\-pcgr\-estimate\-msi
+is a no\-op there and the report simply has no MSI answer. Upstream calls MSI\-H
+at 20% or above for tumour\-only data; the 3.5% figure belongs to the older
+paired caller and would call almost anything unstable. The covered\-site count
+is reported alongside the score, because a panel carries only the
+microsatellites inside its own targets and a thin one moves the percentage by
+whole points.
+.TP
 .BI \-\-intervals " FILE"
 Target intervals as .bed, .interval_list or .list, restricting BQSR and
 Mutect2. ApplyBQSR is deliberately NOT restricted, since it must rewrite the
@@ -518,7 +532,7 @@ differ \(em see
 .B \-\-resume\-force
 Resume despite a parameter change. The result mixes settings from both runs.
 .PP
-The PCGR reporting step (step 11) is driven by these, and runs only when
+The PCGR reporting step (step 12) is driven by these, and runs only when
 .B \-\-pcgr\-refdata\-dir
 is supplied:
 .TP
@@ -723,7 +737,7 @@ Where the orchestrator writes its JSON report. Default:
 .
 .SH PIPELINE STAGES
 .B comprehensive_variant_calling.py
-runs twelve steps. The names accepted by
+runs thirteen steps. The names accepted by
 .B \-\-skip\-steps
 fall into two groups, which behave differently when skipped.
 .PP
@@ -752,6 +766,11 @@ Skipping one of these simply omits the work:
 .TP
 .B mutect2
 Do not call variants.
+.TP
+.B msi
+Do not score microsatellite instability. Off anyway unless
+.B \-\-msi\-models
+is supplied.
 .TP
 .B contamination
 Do not estimate cross\-sample contamination. FilterMutectCalls then runs
@@ -786,7 +805,7 @@ is supplied.
 Failure of
 .BR qc ", " align ", " dedup ", " bqsr ", " mutect2 " or " filter
 is fatal, since each produces an artefact the rest of the run needs.
-.BR contamination ", " cosmic ", " annotate " and " pcgr
+.BR contamination ", " msi ", " cosmic ", " annotate " and " pcgr
 are enrichment only: they warn and the run continues.
 .
 .SH FILES
@@ -1081,6 +1100,21 @@ compares the current parameters against the previous run's manifest and
 refuses to proceed when they differ, unless
 .B \-\-resume\-force
 says otherwise.
+.TP
+.B FFPE material needs the read\-orientation model
+Formalin deaminates cytosine, producing C>T and G>A changes that are damage
+rather than biology. STEP 6 exists to catch them, and on FFPE it earns its
+keep: on the panel this was developed against it filtered 3,222 calls, 1,824 of
+them C>T or G>A. Never skip it on fixed material. Fixation also fragments DNA,
+which is why FFPE runs show short inserts and foldback artefacts \(em see
+.BR \-\-foldback\-min\-match .
+Residual damage still reaches PASS: 59% of C>T/G>A PASS calls on that sample
+sat below 10% allele fraction against 37% of every other substitution, which is
+the case for
+.B \-\-min\-allele\-fraction
+on FFPE rather than trusting the raw PASS set. FFPE damage can also widen
+homopolymer length distributions, so treat a borderline MSI score from fixed
+material with more suspicion than the same number from fresh\-frozen.
 .TP
 .B Targeted panels need \-\-intervals
 Nothing restricts calling to the capture regions unless you say so. Given no

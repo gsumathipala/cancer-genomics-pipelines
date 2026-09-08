@@ -41,22 +41,28 @@ PIPELINE STEPS
         handful of calls, but it is testing against an ASSUMED zero
         rather than a measurement, and cannot detect real contamination.
 
-  STEP 8: Variant Filtering (GATK FilterMutectCalls)
+  STEP 8: Microsatellite Instability (MSIsensor2)
+      - Scores MSI from the tumour BAM alone. Runs only when
+        --msi-models is given.
+      - PCGR will not do this: it restricts MSI to WGS/WES tumour-control
+        runs and silently omits the section otherwise.
+
+  STEP 9: Variant Filtering (GATK FilterMutectCalls)
       - Applies the filters recommended by the Mutect2 team, using the
         read-orientation model from STEP 6 and, when available, the
         contamination tables from STEP 7.
       - Then applies the --min-depth floor, which GATK has no equivalent
         of: FilterMutectCalls will PASS a call standing on two reads.
 
-  STEP 9: COSMIC Annotation
+  STEP 10: COSMIC Annotation
       - Overlaps variants with COSMIC (Catalogue Of Somatic Mutations
         In Cancer) to identify known cancer driver mutations.
 
-  STEP 10: SnpEff Annotation
+  STEP 11: SnpEff Annotation
       - Adds gene names, consequence types (missense, nonsense, etc.),
         and predicted impact (HIGH/MODERATE/LOW/MODIFIER).
 
-  STEP 11: Clinical Interpretation Report (PCGR)
+  STEP 12: Clinical Interpretation Report (PCGR)
       - Optional. Therapeutic actionability tiered by AMP/ASCO/CAP, as a
         self-contained HTML report.
       - TMB, MSI and COSMIC mutational-signature fitting (SBS3/HRD, MMR,
@@ -66,7 +72,7 @@ PIPELINE STEPS
       - Runs only when --pcgr-refdata-dir is given; skipped otherwise.
         Implemented in the sibling module pcgr_report.py.
 
-  STEP 12: Summary Statistics
+  STEP 13: Summary Statistics
       - VCF stats, variant counts by type, COSMIC overlap counts.
 
 COSMIC DATABASE
@@ -168,6 +174,29 @@ Output Structure
   ├── reference/                # Downloaded reference genome
   └── run_manifest_*.json       # Full pipeline record
 
+FFPE MATERIAL
+-------------
+  Formalin fixation does two things this pipeline has to answer for.
+
+  It DEAMINATES CYTOSINE, producing C>T (and G>A on the other strand)
+  changes that are damage, not biology. STEP 6's read-orientation model is
+  the defence: deamination artefacts appear on one read orientation, and
+  --ob-priors lets FilterMutectCalls use that. On the FFPE panel this was
+  developed against it removed 3,222 calls, 1,824 of them C>T or G>A.
+  Never turn that step off on FFPE.
+
+  It also FRAGMENTS DNA, which shows up as a short insert size (108 bp
+  here, shorter than the reads themselves) and, more awkwardly, as
+  foldback artefacts -- a damaged fragment end folds back on itself and
+  is sequenced as its own reverse complement. See the foldback filter.
+
+  Residual damage survives both. Among PASS SNVs on that sample, 59% of
+  C>T/G>A calls sat below 10% VAF against 37% for every other
+  substitution: the deamination tail is thinner after filtering but still
+  there. On FFPE, treat a low-VAF C>T as damage until something else
+  argues otherwise, and prefer --min-allele-fraction over trusting the
+  raw PASS set.
+
 TARGETED PANELS NEED --intervals
 -------------------------------
   Nothing restricts calling to the capture regions unless you say so.
@@ -207,7 +236,7 @@ DEBUGGING NOTES (things that surprise people)
         the variable that would have been produced still points at a real
         file. Skipping "align" additionally REQUIRES the BAM (and .bai) to
         already exist -- see --aligned-dir.
-      - "just don't do it": mutect2, contamination, filter, cosmic,
+      - "just don't do it": mutect2, contamination, msi, filter, cosmic,
         annotate. Skipping "filter" makes filtered_vcf fall back to the
         raw Mutect2 VCF; skipping "contamination" leaves both tables None,
         and FilterMutectCalls then simply omits the two arguments.
@@ -227,7 +256,8 @@ DEBUGGING NOTES (things that surprise people)
 
   * WHICH FAILURES ARE FATAL: qc, align, dedup, bqsr, mutect2 and filter
     all sys.exit(1) -- they produce artefacts the rest of the run needs.
-    contamination, cosmic, annotate and pcgr are enrichment only, so they
+    contamination, msi, cosmic, annotate and pcgr are enrichment only, so
+    they
     warn and continue (they also return None, meaning "tool not installed
     / skipped", which the callers deliberately distinguish from False,
     meaning "failed").
@@ -1420,7 +1450,7 @@ def run_mutect2(tumour_bam, tumour_name, ref, output_vcf,
 
     COSMIC INTEGRATION:
       COSMIC is applied AFTER calling by annotate_cosmic() (SnpSift) and in
-      the dedicated STEP 9. GATK Mutect2 has no COSMIC-aware flag, so the
+      the dedicated STEP 10. GATK Mutect2 has no COSMIC-aware flag, so the
       COSMIC VCF is deliberately NOT passed here -- doing so would silently
       no-op. See annotate_cosmic().
 
@@ -1784,6 +1814,123 @@ def filter_mutect2(mutect_vcf, ref, output_vcf,
     code = run_command(cmd, tag="FilterMutectCalls",
                        log_path=log_path, dry_run=dry_run)
     return code == 0
+
+
+# =============================================================================
+# SECTION 8c: MICROSATELLITE INSTABILITY
+# =============================================================================
+
+# Upstream calls MSI-H at >= 20% for tumour-only data. The paired caller uses
+# 3.5%, and quoting that threshold against a tumour-only score is a common way
+# to turn a stable sample into a false MSI-H call.
+MSI_HIGH_THRESHOLD = 20.0
+
+# Below this many covered sites the score is reported but flagged. Panels
+# carry only the microsatellites that fall inside their capture regions, and
+# a handful of unstable loci out of very few swings the percentage wildly.
+MSI_MIN_SITES = 200
+
+
+def run_msisensor2(bam, models_dir, out_prefix, intervals=None, threads=1,
+                   log_path=None, dry_run=False):
+    """
+    Score microsatellite instability from the tumour BAM alone.
+
+    WHY A SEPARATE TOOL
+      PCGR will not do this. It restricts MSI prediction to WGS/WES
+      tumour-control runs and, on a targeted or tumour-only query, logs a
+      warning and omits the analysis -- so asking PCGR for MSI on a panel
+      returns a report with no MSI section rather than an MSI answer.
+      MSIsensor2 is built for the tumour-only case and reads the BAM.
+
+    WHAT THE NUMBER MEANS
+      The score is the percentage of covered microsatellite loci whose
+      length distribution is unstable. Upstream calls MSI-H at >= 20% for
+      TUMOUR-ONLY data. The older paired MSIsensor used 3.5%, and applying
+      that figure here would call almost anything unstable.
+
+    THE SITE COUNT MATTERS AS MUCH AS THE SCORE
+      A panel only carries the microsatellites inside its capture regions.
+      With a hundred-odd covered loci, a couple of noisy ones move the
+      score by whole percentage points, so the count is returned alongside
+      it and a thin one is flagged rather than quietly averaged away.
+
+    FFPE
+      Formalin fixation fragments DNA and deaminates cytosine, and damaged
+      reads across a homopolymer can widen its apparent length
+      distribution. Treat a borderline score on FFPE material with more
+      suspicion than the same score on fresh-frozen.
+
+    ARGS:
+        bam:        Analysis-ready tumour BAM.
+        models_dir: MSIsensor2 model directory for this genome build.
+        out_prefix: Output path prefix; the tool adds _dis and _somatic.
+        intervals:  Optional BED restricting the scan to the capture target.
+        threads:    Parallel workers.
+        log_path:   Log file path.
+        dry_run:    If True, show the command without running it.
+
+    RETURNS:
+        dict with score, sites and unstable counts, or None when the step
+        could not run. Never raises: MSI is enrichment, not a dependency.
+    """
+    if not models_dir:
+        return None
+    if shutil.which("msisensor2") is None:
+        print("[WARN] msisensor2 not found on PATH; skipping MSI.")
+        return None
+    if not os.path.isdir(models_dir):
+        print(f"[WARN] MSI models directory not found: {models_dir}")
+        return None
+
+    os.makedirs(os.path.dirname(out_prefix) or ".", exist_ok=True)
+    cmd = ["msisensor2", "msi",
+           "-M", models_dir,
+           "-t", bam,
+           "-o", out_prefix,
+           "-b", str(max(1, threads))]
+    if intervals:
+        cmd += ["-e", intervals]
+
+    code = run_command(cmd, tag="MSIsensor2", log_path=log_path,
+                       dry_run=dry_run)
+    if dry_run:
+        return None
+    if code != 0:
+        print("[WARN] msisensor2 failed; continuing without an MSI score.")
+        return None
+
+    # Output is a two-line TSV: header, then total/unstable/percentage.
+    try:
+        with open(out_prefix, encoding="utf-8") as fh:
+            rows = [ln.split() for ln in fh.read().splitlines() if ln.strip()]
+    except OSError as exc:
+        print(f"[WARN] Could not read the MSI result: {exc}")
+        return None
+    if len(rows) < 2 or len(rows[1]) < 3:
+        print("[WARN] MSI result was not in the expected format.")
+        return None
+
+    try:
+        sites, unstable, score = (int(rows[1][0]), int(rows[1][1]),
+                                  float(rows[1][2]))
+    except ValueError:
+        print("[WARN] Could not parse the MSI result.")
+        return None
+
+    status = "MSI-H" if score >= MSI_HIGH_THRESHOLD else "MSS / MSI-low"
+    print(f"[INFO] MSI: {score:.2f}% -- {unstable} unstable of {sites} "
+          f"covered sites -> {status} "
+          f"(tumour-only threshold {MSI_HIGH_THRESHOLD:.0f}%)")
+    if sites < MSI_MIN_SITES:
+        print(f"[WARN] Only {sites} microsatellite sites had usable "
+              f"coverage (< {MSI_MIN_SITES}). A panel carries only the loci "
+              f"inside its targets, and with this few a couple of noisy "
+              f"ones move the score by whole points. Treat it as indicative.")
+    return {"score_percent": score, "sites_covered": sites,
+            "sites_unstable": unstable, "status": status,
+            "threshold_percent": MSI_HIGH_THRESHOLD,
+            "low_site_count": sites < MSI_MIN_SITES}
 
 
 # =============================================================================
@@ -3057,6 +3204,17 @@ def build_parser():
                           "so a variant at the first or last base needs the "
                           "flanking reads to be callable. Ignored without "
                           "--intervals.")
+    res.add_argument("--msi-models", default=None, metavar="DIR",
+                     help="MSIsensor2 model directory for this genome build "
+                          "(e.g. ~/data/msisensor2/models_hg38). Supplying it "
+                          "enables STEP 8, which scores microsatellite "
+                          "instability from the tumour BAM alone. PCGR will "
+                          "not do this on a panel or a tumour-only query -- "
+                          "it restricts MSI to WGS/WES tumour-control runs "
+                          "and omits the section without comment. Upstream "
+                          "calls MSI-H at >=20%% for tumour-only data; the "
+                          "3.5%% figure belongs to the older paired caller "
+                          "and would call almost anything unstable.")
     res.add_argument("--foldback-min-match", type=float,
                      default=FOLDBACK_MIN_MATCH,
                      help="Tag an insertion 'foldback' when this fraction of "
@@ -3246,7 +3404,7 @@ def build_parser():
                               "Useful for quick test runs / debugging.")
     runtime.add_argument("--skip-steps", nargs="*", default=[],
                          help="Skip pipeline stages: qc, align, dedup, bqsr, "
-                              "mutect2, contamination, filter, cosmic, "
+                              "mutect2, contamination, msi, filter, cosmic, "
                               "annotate, pcgr.")
     runtime.add_argument("--resume", action="store_true",
                          help="Reuse pipeline steps whose output already "
@@ -3653,7 +3811,7 @@ def main():
     # STEP 1: QC & CLEANING
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 1/12: QC & Cleaning (fastp)")
+    print("# STEP 1/13: QC & Cleaning (fastp)")
     print(f"{'#' * 72}")
 
     tumour_r1_clean = os.path.join(dirs["cleaned"],
@@ -3725,7 +3883,7 @@ def main():
     # STEP 2: ALIGNMENT
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 2/12: Alignment (BWA-MEM2)")
+    print("# STEP 2/13: Alignment (BWA-MEM2)")
     print(f"{'#' * 72}")
 
     tumour_bam = os.path.join(dirs["align"], f"{tumour['name']}.sorted.bam")
@@ -3803,7 +3961,7 @@ def main():
     # STEP 3: DUPLICATE MARKING
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 3/12: Duplicate Marking (GATK)")
+    print("# STEP 3/13: Duplicate Marking (GATK)")
     print(f"{'#' * 72}")
 
     tumour_dedup = os.path.join(dirs["dedup"],
@@ -3855,7 +4013,7 @@ def main():
     # STEP 4: BQSR
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 4/12: Base Quality Score Recalibration (BQSR)")
+    print("# STEP 4/13: Base Quality Score Recalibration (BQSR)")
     print(f"{'#' * 72}")
 
     tumour_bqsr = os.path.join(dirs["bqsr"],
@@ -3916,7 +4074,7 @@ def main():
     # STEP 5: MUTECT2 VARIANT CALLING
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 5/12: Somatic Variant Calling (GATK Mutect2)")
+    print("# STEP 5/13: Somatic Variant Calling (GATK Mutect2)")
     print(f"{'#' * 72}")
 
     mutect2_vcf = os.path.join(dirs["mutect2"],
@@ -3952,7 +4110,7 @@ def main():
     # STEP 6: STRAND BIAS MODELLING
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 6/12: Strand Bias Modelling (LearnReadOrientation)")
+    print("# STEP 6/13: Strand Bias Modelling (LearnReadOrientation)")
     print(f"{'#' * 72}")
 
     orientation_model = os.path.join(dirs["mutect2"],
@@ -3974,7 +4132,7 @@ def main():
     # STEP 7: CONTAMINATION ESTIMATION
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 7/12: Contamination Estimation (GATK)")
+    print("# STEP 7/13: Contamination Estimation (GATK)")
     print(f"{'#' * 72}")
 
     # Enrichment, not a dependency: contamination_table stays None unless
@@ -4026,10 +4184,36 @@ def main():
               "(--skip-steps contamination).")
 
     # ================================================================
-    # STEP 8: MUTECT2 CALL FILTERING
+    # STEP 8: MICROSATELLITE INSTABILITY
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 8/12: Filtering Mutect2 Calls")
+    print("# STEP 8/13: Microsatellite Instability (MSIsensor2)")
+    print(f"{'#' * 72}")
+
+    msi_result = None
+    if should_run("msi") and args.msi_models:
+        msi_result = run_msisensor2(
+            tumour_bqsr, args.msi_models,
+            os.path.join(dirs["metrics"], f"{tumour['name']}.msi"),
+            intervals=args.intervals, threads=args.threads,
+            log_path=os.path.join(dirs["logs"], f"{tumour['name']}.log"),
+            dry_run=args.dry_run,
+        )
+        if msi_result:
+            manifest["steps_completed"].append("msi")
+            manifest["msi"] = msi_result
+    elif not args.msi_models:
+        print("[SKIP] MSI skipped (--msi-models not provided).")
+        print("       PCGR does not cover this: it restricts MSI to WGS/WES")
+        print("       tumour-control runs and omits the section otherwise.")
+    else:
+        print("[SKIP] MSI skipped (--skip-steps msi).")
+
+    # ================================================================
+    # STEP 9: MUTECT2 CALL FILTERING
+    # ================================================================
+    print(f"\n{'#' * 72}")
+    print("# STEP 9/13: Filtering Mutect2 Calls")
     print(f"{'#' * 72}")
 
     filtered_vcf = os.path.join(dirs["mutect2"],
@@ -4081,10 +4265,10 @@ def main():
         filtered_vcf = mutect2_vcf
 
     # ================================================================
-    # STEP 9: COSMIC ANNOTATION
+    # STEP 10: COSMIC ANNOTATION
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 9/12: COSMIC Database Annotation")
+    print("# STEP 10/13: COSMIC Database Annotation")
     print(f"{'#' * 72}")
 
     cosmic_vcf = os.path.join(dirs["mutect2"],
@@ -4127,17 +4311,17 @@ def main():
             print("[SKIP] COSMIC skipped (--skip-steps cosmic).")
 
     # ================================================================
-    # STEP 10: SnpEff ANNOTATION
+    # STEP 11: SnpEff ANNOTATION
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 10/12: Gene Annotation (SnpEff)")
+    print("# STEP 11/13: Gene Annotation (SnpEff)")
     print(f"{'#' * 72}")
 
     annotated_vcf = os.path.join(dirs["annotated"],
                                  f"{tumour['name']}.annotated.vcf")
 
     # Auto-detect the genome build from the reference filename. Computed
-    # here, OUTSIDE the should_run() guard, because STEP 11 (PCGR) needs it
+    # here, OUTSIDE the should_run() guard, because STEP 12 (PCGR) needs it
     # too -- deriving it inside the branch would raise NameError whenever
     # 'annotate' is skipped but PCGR still runs.
     snpeff_genome = "hg38"
@@ -4162,10 +4346,10 @@ def main():
         print("[SKIP] SnpEff annotation skipped.")
 
     # ================================================================
-    # STEP 11: PCGR CLINICAL REPORT
+    # STEP 12: PCGR CLINICAL REPORT
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 11/12: Clinical Interpretation Report (PCGR)")
+    print("# STEP 12/13: Clinical Interpretation Report (PCGR)")
     print(f"{'#' * 72}")
 
     if should_run("pcgr") and args.pcgr_refdata_dir:
@@ -4263,10 +4447,10 @@ def main():
             print("[SKIP] PCGR skipped (--skip-steps pcgr).")
 
     # ================================================================
-    # STEP 12: SUMMARY STATISTICS
+    # STEP 13: SUMMARY STATISTICS
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 12/12: Summary Statistics")
+    print("# STEP 13/13: Summary Statistics")
     print(f"{'#' * 72}")
 
     if os.path.exists(filtered_vcf):
