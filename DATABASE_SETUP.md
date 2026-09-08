@@ -134,6 +134,11 @@ Sizes are approximate.
 dbSNP, Mills and the PoN all come from the Broad public buckets; the `wget`
 commands are in `install.md` §6.
 
+> **The panel of normals here is not the one copy-number analysis needs.**
+> `1000g_pon.hg38.vcf.gz` is sites-only — zero samples, no coverage — a list of
+> recurrent artefact positions for Mutect2. CNV needs a *read-count* panel of
+> normals built from BAMs on your own assay. See `CNV_SCOPE.md`.
+
 ## Actual layout on disk
 
 ```text

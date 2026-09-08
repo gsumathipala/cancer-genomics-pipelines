@@ -487,6 +487,12 @@ notices it was dropped.
 The two things it cannot supply for you are the target BED (`--intervals`,
 which is your assay vendor's file) and a matched normal.
 
+**Copy number is not implemented.** The pipeline calls SNVs and short indels
+only. CNV is designed in `CNV_SCOPE.md` and waits on normals sequenced on your
+own assay — every tool it needs is already installed or one conda package away.
+Note that the panel of normals used by Mutect2 is a different artefact and does
+not serve this purpose.
+
 **MSI needs `--msi-models`, not PCGR.** MSIsensor2 scores microsatellite
 instability from the tumour BAM alone, which is the only route to an MSI answer
 on a targeted panel. The installer fetches the hg38 models
