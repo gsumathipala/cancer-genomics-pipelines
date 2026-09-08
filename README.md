@@ -81,6 +81,19 @@ python webapp/app.py --allow-root ~/data --allow-root /path/to/fastqs
 `python3 install_pipeline.py --check` doubles as a health check afterwards, and
 is the fastest way to tell whether an environment has drifted.
 
+### Staying current
+
+```bash
+python3 check_db_updates.py --print       # any newer database releases?
+```
+
+Writes its answer to `~/.cache/cancer_pipeline/db_updates.json`, which the web
+interface shows on its front page. Run it weekly from cron if you like. It
+**reports only** — nothing is downloaded or replaced, and no run reads it.
+Upgrade deliberately: a new VEP cache changes the transcript set and a new
+COSMIC changes identifiers, so mixing releases within a cohort makes reports
+disagree for reasons unrelated to the samples.
+
 ---
 
 ## What gets installed, and where
@@ -119,6 +132,8 @@ webapp/                           Flask front end (patient details, batch, clean
 install.md                        manual install, and the reference the installer follows
 DATABASE_SETUP.md                 what each database is for, and where it goes
 CNV_SCOPE.md                      copy-number: designed, not built — read before starting it
+
+check_db_updates.py               tells you when a database has a newer release
 ```
 
 **Keep the Python files in one directory.** The orchestrator locates its

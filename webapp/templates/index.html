@@ -2,6 +2,30 @@
 {% block title %}Runs &middot; Cancer DNA Pipeline{% endblock %}
 {% block content %}
 
+{% if db_notice %}
+<section class="card{% if db_notice.needs_attention %} warn{% endif %}">
+  <h2>Reference databases</h2>
+  {% if db_notice.flagged %}
+    <ul>
+      {% for i in db_notice.flagged %}
+        <li><strong>{{ i.name }}</strong> —
+          {% if i.state == 'update' %}update available{% elif i.state == 'changed' %}local copy differs from source{% else %}check manually{% endif %}
+          {% if i.latest %}<span class="hint inline">(installed {{ i.installed }}, latest {{ i.latest }})</span>{% endif %}
+          {% if i.note %}<br><span class="hint">{{ i.note }}</span>{% endif %}
+          {% if i.url %}<br><a href="{{ i.url }}" rel="noopener noreferrer" target="_blank">{{ i.url }}</a>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="hint">All checked databases are current.</p>
+  {% endif %}
+  <p class="hint">Checked {{ db_notice.checked }}Z{% if db_notice.stale %} —
+    <strong>{{ db_notice.age_days }} days ago; this may be out of date</strong>{% endif %}.
+    Nothing is downloaded or changed automatically: upgrading a database
+    mid-project shifts annotations, so it stays a decision you make.</p>
+</section>
+{% endif %}
+
 <h1>Pipeline runs</h1>
 
 {% if busy %}

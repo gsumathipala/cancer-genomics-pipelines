@@ -22,6 +22,21 @@ style, which is the step that is silent when skipped.
 The rest of this page explains the layout, what each database is for, and what
 happens when one is missing.
 
+## Knowing when one of these changes
+
+```bash
+python3 check_db_updates.py --print
+```
+
+Checks the release of every database on this page and writes the result to
+`~/.cache/cancer_pipeline/db_updates.json`; the web interface shows it on the
+front page. It reports only — nothing is downloaded or replaced, and a run
+never reads it. Upgrade deliberately: a new VEP cache changes the transcript
+set and a new COSMIC changes identifiers, so mixing releases within one cohort
+makes reports disagree for reasons unrelated to the samples.
+
+COSMIC is reported as *manual* because downloads need an account.
+
 ## The short answer
 
 There is **no hard-coded database location**. Every resource is passed as an

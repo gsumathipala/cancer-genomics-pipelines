@@ -105,7 +105,8 @@ def index():
     manager.load_existing()
     return render_template("index.html",
                            jobs=[j.snapshot() for j in manager.all()],
-                           busy=manager.busy())
+                           busy=manager.busy(),
+                           db_notice=database_notice())
 
 
 @app.route("/new")
@@ -425,6 +426,49 @@ def sample_output_dir(base, sample):
     """Per-sample output directory for a batch run."""
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", sample)
     return os.path.join(base, safe)
+
+
+# ---------------------------------------------------------------------------
+# Database update notice
+# ---------------------------------------------------------------------------
+# Read from a file that check_db_updates.py writes out of band. No network
+# call happens while serving a page: a request must not hang because
+# ftp.ensembl.org is slow, and a run must never be delayed or altered by an
+# upgrade being available. The notice is information, and nothing in the
+# pipeline consults it.
+
+
+def database_notice():
+    """
+    What the last database check found, or None.
+
+    Returns None when no check has ever run, so a machine that never set up
+    the cron entry shows nothing rather than a permanent scolding. A stale
+    result is surfaced as stale rather than quietly presented as current --
+    "checked three months ago, all well" is not the same claim as "all well".
+    """
+    try:
+        sys.path.insert(0, os.path.dirname(SCRIPT_VARIANT))
+        from check_db_updates import load_status
+    except Exception:
+        return None
+    status = load_status()
+    if not status:
+        return None
+    return {
+        "checked": (status.get("checked_utc") or "")[:16].replace("T", " "),
+        "age_days": status.get("age_days"),
+        "stale": status.get("stale"),
+        "needs_attention": status.get("needs_attention", 0),
+        # Only the rows worth showing. "current" is the boring majority and
+        # listing it buries the one line that matters.
+        #
+        # NOT named "items": Jinja resolves dict.items to the built-in method
+        # before it looks for a key of that name, so `db_notice.items` in a
+        # template silently yields a bound method instead of this list.
+        "flagged": [r for r in status.get("results", [])
+                    if r.get("state") in ("update", "changed", "manual")],
+    }
 
 
 def run_warnings(meta):

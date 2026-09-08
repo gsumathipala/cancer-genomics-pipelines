@@ -596,6 +596,39 @@ required.
 FASTQs are referenced by path on the server rather than uploaded, since they
 are routinely tens of gigabytes.
 
+## 7c. Keeping an eye on database releases (optional)
+
+`check_db_updates.py` asks whether anything installed has a newer release and
+writes the answer to `~/.cache/cancer_pipeline/db_updates.json`. The web
+interface reads that file and shows a notice on its front page.
+
+```bash
+python3 check_db_updates.py --print     # check now, show the result
+```
+
+Weekly, via cron:
+
+```cron
+17 6 * * 1  /usr/bin/python3 /path/to/check_db_updates.py
+```
+
+**It reports; it does not update.** It never writes to the data directory,
+never downloads a database, and never touches a conda environment — every
+check is an HTTP HEAD or a read-only API call. That is deliberate: a new VEP
+cache changes the transcript set and a new COSMIC changes identifiers, so an
+upgrade mid-project can make this week's report disagree with last week's for
+reasons that have nothing to do with the sample. Upgrade on purpose, then
+re-run the affected samples rather than mixing releases in one cohort.
+
+It exits 0 even when checks fail, so a cron entry stays quiet; `--strict`
+exits 1 when something needs attention, for a monitoring system that wants
+that. A source it cannot reach is reported as **unknown**, never as up to
+date — silence and good news must not look alike.
+
+COSMIC is reported as **manual**: downloads need a registered account, so no
+unattended check is honest. The installed version is shown beside the
+release-notes link.
+
 ## 8. Troubleshooting / notes
 
 - **Channel/solver trouble**: prefer `mamba` over `conda` for the big solve:

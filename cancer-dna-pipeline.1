@@ -10,7 +10,8 @@ cancer\-dna\-pipeline \- somatic variant calling for Illumina NextSeq 1000 cance
 .BR align_reads.py ,
 .BR comprehensive_variant_calling.py ,
 .BR pipeline_orchestrator.py ,
-.B pcgr_report.py
+.BR pcgr_report.py ,
+.B check_db_updates.py
 .
 .SH SYNOPSIS
 .B fastq_qc_clean.py
@@ -807,6 +808,39 @@ Failure of
 is fatal, since each produces an artefact the rest of the run needs.
 .BR contamination ", " msi ", " cosmic ", " annotate " and " pcgr
 are enrichment only: they warn and the run continues.
+.
+.SS check_db_updates.py \(em database release notifier
+Checks whether any installed reference database has a newer release, and
+writes the result to
+.I ~/.cache/cancer_pipeline/db_updates.json
+for the web interface to display. It
+.B reports only:
+it never downloads, replaces or modifies anything a run depends on, and no
+pipeline stage reads its output. Upgrading a database mid\-project shifts
+annotations \(em a new VEP cache changes the transcript set, a new COSMIC
+changes identifiers \(em so the decision stays with you.
+.TP
+.BI \-\-data\-dir " DIR"
+Where the databases live. Default:
+.IR ~/data .
+.TP
+.BI \-\-status\-file " FILE"
+Where to write the result. Deliberately outside the data directory.
+.TP
+.B \-\-print
+Print a readable summary as well as writing it.
+.TP
+.B \-\-json
+Print the status as JSON.
+.TP
+.B \-\-no\-write
+Check without writing the status file.
+.TP
+.B \-\-strict
+Exit 1 when something needs attention. Off by default, so a cron entry stays
+quiet on a flaky network. A source that cannot be reached is reported as
+.IR unknown ,
+never as up to date.
 .
 .SH FILES
 .SS Produced by fastq_qc_clean.py
