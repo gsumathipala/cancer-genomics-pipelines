@@ -71,7 +71,12 @@ class Job:
         self.pcgr_form = pcgr_form
         self.pcgr_status = None
 
-        self.status = "queued"      # queued|running|finished|failed|cancelled
+        # queued|running|reporting|finished|failed|cancelled|interrupted.
+        # "reporting" is the PCGR follow-up: the pipeline has exited but the
+        # run is NOT done, and calling it finished there is what made the
+        # page offer a PDF that said "PCGR did not run" while PCGR was in
+        # fact running. Only the last thing this job does may say finished.
+        self.status = "queued"
         self.returncode = None
         self.step = 0
         self.total_steps = 0
@@ -121,6 +126,11 @@ class Job:
         with self._lock:
             self.status = "running"
             self.started = datetime.now(timezone.utc).isoformat()
+        # Written up front so a webapp killed mid-run still has a record to
+        # re-attach to; load_existing() skips a run directory with no state
+        # file, so without this an interrupted run vanished from the list
+        # rather than showing as interrupted.
+        self._write_state()
 
         try:
             with open(self.log_path, "a", encoding="utf-8") as log:
@@ -154,17 +164,42 @@ class Job:
                 if self.status == "cancelled":
                     pass                       # keep the cancelled status
                 elif self.returncode == 0:
-                    self.status = "finished"
-                    self.step = self.total_steps or self.step
+                    # A clean pipeline with a report still to come is
+                    # "reporting", not "finished" -- the page keeps polling,
+                    # keeps offering Cancel, and withholds the report
+                    # buttons until there is something behind them.
+                    if self.pcgr_form:
+                        self.status = "reporting"
+                        self.step = self.total_steps or self.step
+                        # The report is a step of this run even though the
+                        # pipeline never counted it, so the bar has
+                        # somewhere left to go instead of sitting at 100%
+                        # for the hour PCGR takes.
+                        if self.total_steps:
+                            self.total_steps += 1
+                        self.step_name = "Clinical report (PCGR)"
+                    else:
+                        self.status = "finished"
+                        self.step = self.total_steps or self.step
                 else:
                     self.status = "failed"
                     self.error = f"pipeline exited {self.returncode}"
 
+            # Persist the handover: a webapp restarted during the report
+            # would otherwise find no state file at all for this run.
+            self._write_state()
+
             # The clinical report runs only after a clean pipeline, and its
             # failure never fails the run: the call set is already on disk
             # and is the thing that took the hours.
-            if self.status == "finished" and self.pcgr_form:
+            if self.status == "reporting":
                 self._run_pcgr()
+                with self._lock:
+                    # Cancelling during the report is a cancelled run, not a
+                    # finished one; anything else is now genuinely done.
+                    if self.status == "reporting":
+                        self.status = "finished"
+                        self.step = self.total_steps or self.step
         except Exception as exc:                # noqa: BLE001 - reported to UI
             with self._lock:
                 self.status = "failed"
@@ -216,9 +251,6 @@ class Job:
             self.pcgr_status = f"skipped: {note}"
             self._log_pcgr(f"[PCGR] Skipped: {note}.\n")
             return
-
-        with self._lock:
-            self.step_name = "Clinical report (PCGR)"
 
         self._log_pcgr(f"\n### clinical report\n### {' '.join(argv)}\n")
         try:
@@ -274,7 +306,7 @@ class Job:
     def cancel(self):
         """Terminate the run and everything it spawned."""
         with self._lock:
-            if self.status not in ("queued", "running"):
+            if self.status not in ("queued", "running", "reporting"):
                 return False
             self.status = "cancelled"
             self.error = "cancelled by user"
@@ -354,7 +386,7 @@ class JobManager:
 
     def busy(self):
         with self._lock:
-            return any(j.status in ("running", "queued")
+            return any(j.status in ("running", "queued", "reporting")
                        for j in self._jobs.values())
 
     def load_existing(self):
@@ -389,9 +421,13 @@ class JobManager:
             job.started = snap.get("started")
             job.finished = snap.get("finished")
             job.error = snap.get("error")
+            job.pcgr_status = snap.get("pcgr_status")
+            job.step_name = snap.get("step_name", "")
             # An interrupted webapp leaves jobs stuck as "running"; they are
-            # not, because the process died with the server.
-            if job.status in ("running", "queued"):
+            # not, because the process died with the server. "reporting"
+            # goes the same way -- PCGR died with it too, and the run has no
+            # report to show for the status it was left in.
+            if job.status in ("running", "queued", "reporting"):
                 job.status = "interrupted"
                 job.error = "webapp restarted while this run was in progress"
             with self._lock:
@@ -413,8 +449,8 @@ INTERMEDIATE_DIRS = ("cleaned_fastq", "aligned", "dedup", "bqsr", "tmp")
 
 # Never touched: the call sets, the report, and everything needed to say how
 # they were produced.
-PRESERVED_DIRS = ("mutect2", "annotated", "pcgr", "metrics", "stats",
-                  "logs", "fastp_reports", "reference")
+PRESERVED_DIRS = ("mutect2", "annotated", "pcgr", "coverage", "metrics",
+                  "stats", "logs", "fastp_reports", "reference")
 
 
 def _tree_size(path):
@@ -619,6 +655,20 @@ def latest_manifest(output_dir):
         return None
 
 
+def find_coverage_reports(output_dir):
+    """
+    The per-sample coverage reports for a run, newest naming first.
+
+    Globbed rather than read from the manifest: they are written before the
+    manifest is finalised, and the point of them is to be readable WHILE
+    the run is still going.
+    """
+    if not output_dir:
+        return []
+    pattern = os.path.join(output_dir, "coverage", "*.coverage.html")
+    return sorted(glob.glob(pattern))
+
+
 def build_pcgr_argv(python_exe, script_dir, manifest, form, output_dir):
     """
     Build the pcgr_report.py command for a finished run.
@@ -678,6 +728,12 @@ def build_pipeline_argv(python_exe, script, form):
             "--output-dir", form["output_dir"],
             "--reference", form["reference"]]
 
+    # Only meaningful when --reference names a genome instead of a FASTA,
+    # but harmless otherwise, and passing it always means a run that falls
+    # back to the name still shares one download and one index.
+    if form.get("reference_dir"):
+        argv += ["--reference-dir", form["reference_dir"]]
+
     if form.get("manifest"):
         argv += ["--manifest", form["manifest"]]
     else:
@@ -715,6 +771,15 @@ def build_pipeline_argv(python_exe, script, form):
     # actually set. --interval-padding is meaningless without --intervals.
     if form.get("intervals") and form.get("interval_padding"):
         argv += ["--interval-padding", str(form["interval_padding"])]
+
+    # The coverage check. Optional by design: with no BED the pipeline says
+    # so and carries on, because a panel BED is not always to hand and a
+    # run without one is still a run.
+    if form.get("coverage_bed"):
+        argv += ["--coverage-bed", form["coverage_bed"]]
+        if form.get("coverage_min_depth"):
+            argv += ["--coverage-min-depth",
+                     str(form["coverage_min_depth"])]
     if form.get("min_depth"):
         argv += ["--min-depth", str(form["min_depth"])]
     if form.get("min_allele_fraction"):

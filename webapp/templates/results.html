@@ -28,6 +28,28 @@
 </section>
 
 <section class="card">
+  <h2>Target coverage</h2>
+  {% if coverage %}
+    <p class="hint">Which parts of the target the sequencing actually
+      reached &mdash; read this before trusting an absent variant.</p>
+    <p>
+      {% for index, sample in coverage %}
+        <a class="button ghost" target="_blank"
+           href="{{ url_for('job_coverage', job_id=job.id, index=index) }}">
+          Coverage: {{ sample }}</a>
+      {% endfor %}
+    </p>
+    <p class="hint">Measured against
+      <code>{{ coverage_bed or 'the submitted BED' }}</code>.</p>
+  {% else %}
+    <p class="hint">No coverage report: this run was submitted without a
+      target BED. Nothing here distinguishes a region that was sequenced and
+      is wild type from one the sequencing never reached &mdash; both are
+      absent from the VCF, and absent from the clinical report.</p>
+  {% endif %}
+</section>
+
+<section class="card">
   <h2>Pipeline summary</h2>
   {% if manifest %}
   <dl class="kv">

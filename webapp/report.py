@@ -88,6 +88,27 @@ def find_pcgr_outputs(output_dir):
     return found
 
 
+def find_coverage_summaries(output_dir):
+    """
+    The coverage step's per-sample JSON summaries, if it ran.
+
+    This is the only thing in the run that can distinguish "sequenced and
+    wild type" from "never sequenced", so the PDF states it rather than
+    leaving the reader to infer coverage from an absence of variants.
+    """
+    found = []
+    for path in sorted(glob.glob(os.path.join(output_dir, "coverage",
+                                              "*.coverage.json"))):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if data.get("summary"):
+            found.append(data)
+    return found
+
+
 def read_pcgr_variants(tsv_paths, limit=40):
     """
     Pull a variant table out of a PCGR TSV, if one is recognisable.
@@ -259,6 +280,54 @@ def build_report(patient, run, output_dir, pdf_path):
             "is expected when bcftools was unavailable or the calling step "
             "did not complete.", size=9, grey=0.35)
 
+    # --- Target coverage -------------------------------------------------
+    # Placed BEFORE the variant table on purpose: it says how much of the
+    # target the table is entitled to speak for.
+    doc.heading("Target coverage", 2)
+    coverage = find_coverage_summaries(output_dir)
+    if coverage:
+        rows = []
+        shortfall = False
+        for data in coverage:
+            cs = data["summary"]
+            shortfall = shortfall or not cs["all_covered"]
+            rows.append([
+                str(data.get("sample", "")),
+                f"{cs['regions_fully_covered']}/{cs['regions']}",
+                f"{cs['fraction_of_panel_covered'] * 100:.2f}%",
+                f"{cs['bases_below_threshold']:,}",
+                str(cs["regions_absent"]),
+            ])
+        bed_name = os.path.basename(coverage[0].get("bed") or "")
+        doc.paragraph(
+            "Regions of %s reaching %sx, the depth below which a call is "
+            "filtered out." % (bed_name or "the target BED",
+                               coverage[0]["summary"]["min_depth"]),
+            size=9, grey=0.35)
+        doc.spacer(4)
+        doc.table(["Sample", "Regions complete", "Panel covered",
+                   "Bases below threshold", "Regions with none"],
+                  rows, widths=[1.4, 1.2, 1.0, 1.4, 1.0])
+        doc.spacer(4)
+        if shortfall:
+            doc.paragraph(
+                "Some target regions did not reach the depth threshold. A "
+                "variant in those stretches would be absent from the VCF and "
+                "from this report whether or not it is present in the "
+                "specimen; the per-sample coverage report names them base by "
+                "base.", size=9, grey=0.35)
+        else:
+            doc.paragraph(
+                "Every target region reached the threshold across all bases, "
+                "so an absent variant is a genuine negative as far as depth "
+                "is concerned.", size=9, grey=0.35)
+    else:
+        doc.paragraph(
+            "No coverage check was run for this analysis (no target BED was "
+            "supplied). Nothing in this report distinguishes a region that "
+            "was sequenced and is wild type from one the sequencing never "
+            "reached: both appear as no variant.", size=9, grey=0.35)
+
     # --- PCGR ------------------------------------------------------------
     doc.heading("Clinical interpretation (PCGR)", 2)
     if variants:
@@ -308,6 +377,9 @@ def build_report(patient, run, output_dir, pdf_path):
         "Any therapeutic associations shown originate from PCGR's knowledge "
         "bases and require review by a qualified molecular pathologist "
         "against the current literature.",
+        "A negative result is only as good as the coverage behind it. Where "
+        "no coverage check was run, or where regions fell below the depth "
+        "threshold, absence of a variant is not evidence of its absence.",
         "Tumour mutational burden is only meaningful when depth and allele "
         "fraction were available to PCGR. Both are lifted from FORMAT into "
         "INFO before the report is built; the run log records whether that "

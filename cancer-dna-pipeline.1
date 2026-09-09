@@ -90,7 +90,7 @@ Chains the three stages into a single command, handling the manifest handoff
 between them.
 .TP
 .B pcgr_report.py
-Optional reporting step, invoked as step 12 of
+Optional reporting step, invoked as step 13 of
 .B comprehensive_variant_calling.py
 or run standalone. Wraps PCGR (Personal Cancer Genome Reporter) to turn a
 somatic VCF into a clinical interpretation report: therapeutic actionability
@@ -289,7 +289,22 @@ Directory for aligned BAMs and statistics. Required.
 .BI \-r ", " \-\-reference " REF"
 Reference genome FASTA, or the known name
 .I hg38
-to download it automatically from the Broad Institute's public bucket.
+to download it automatically from the Broad Institute's public bucket. A name
+is resolved against
+.B \-\-reference\-dir
+first, so an already\-installed genome is used as it stands.
+.TP
+.BI \-\-reference\-dir " DIR"
+Shared directory holding downloaded genomes and their indices, consulted
+before anything is downloaded and written to when something must be. Kept
+deliberately outside the output directory: the reference and its indices are
+identical for every run, and putting them under
+.B \-\-output\-dir
+meant each new output directory paid for its own 3 GB download and its own
+1\(en2 hour bwa\-mem2 index. Default:
+.IR ~/data/references ,
+or
+.BR $PIPELINE_REFERENCE_DIR .
 .TP
 .BI \-\-manifest " FILE"
 A
@@ -439,6 +454,31 @@ without
 .BR \-\-intervals .
 Default: 0.
 .TP
+.BI \-\-coverage\-bed " FILE"
+Target regions checked for coverage before the clinical report is written.
+Every region is measured against the depth a call must reach, and the
+stretches that fall short are named, base by base, in a per\-sample HTML
+report under
+.IR <output>/coverage/ .
+.B This is the only thing in the run that distinguishes a region nobody
+.B sequenced from a region that is genuinely wild type:
+both produce no variant, and a VCF has no way to say which happened, so a
+capture dropout otherwise reads as a negative result all the way into the
+clinical report. Optional \(em without it the run proceeds and simply makes
+no coverage statement.
+.TP
+.BI \-\-coverage\-min\-depth " INT"
+Depth a base must reach to count as covered. Default:
+.BR \-\-min\-depth ,
+the depth below which a call would have been filtered out anyway.
+.TP
+.BI \-\-coverage\-min\-mapq " INT"
+Ignore reads below this mapping quality when measuring coverage, so
+"covered" means covered as far as the caller is concerned. Default: 20.
+.TP
+.BI \-\-coverage\-min\-baseq " INT"
+Ignore bases below this base quality when measuring coverage. Default: 20.
+.TP
 .BI \-\-min\-depth " INT"
 Tag calls whose tumour
 .I FORMAT/DP
@@ -533,7 +573,7 @@ differ \(em see
 .B \-\-resume\-force
 Resume despite a parameter change. The result mixes settings from both runs.
 .PP
-The PCGR reporting step (step 12) is driven by these, and runs only when
+The PCGR reporting step (step 13) is driven by these, and runs only when
 .B \-\-pcgr\-refdata\-dir
 is supplied:
 .TP
@@ -889,6 +929,12 @@ SnpEff\-annotated calls: gene, consequence and predicted impact.
 .TP
 .I <output>/pcgr/
 PCGR clinical report (HTML plus machine\-readable TSV), when enabled.
+.TP
+.I <output>/coverage/<sample>.coverage.{html,json,tsv}
+Target coverage per sample, when
+.B \-\-coverage\-bed
+is given: which regions reached the depth threshold and, for those that did
+not, the exact stretches a variant could have hidden in.
 .TP
 .I <output>/{metrics,stats,logs}/
 Duplicate metrics, BQSR tables, alignment statistics, per\-sample logs.

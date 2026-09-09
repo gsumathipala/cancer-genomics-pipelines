@@ -20,7 +20,7 @@ package-manager conflicts.
 | GATK (4.x) | comprehensive_variant_calling.py | MarkDuplicatesSpark, BQSR, Mutect2, FilterMutectCalls | `gatk4` |
 | bcftools   | comprehensive_variant_calling.py | COSMIC annotation, overlap counts, stats | `bcftools` |
 | SnpEff     | comprehensive_variant_calling.py | Gene/consequence annotation      | `snpeff` |
-| PCGR       | (optional) pcgr_report.py, comprehensive_variant_calling.py step 12 | Clinical report: actionability tiers; TMB / MSI / signatures only if the matching `--pcgr-estimate-*` flag is passed | `pcgr` |
+| PCGR       | (optional) pcgr_report.py, comprehensive_variant_calling.py step 13 | Clinical report: actionability tiers; TMB / MSI / signatures only if the matching `--pcgr-estimate-*` flag is passed | `pcgr` |
 | multiqc    | (optional, suggested by fastq_qc_clean.py) | Aggregate reports          | `multiqc` |
 | Flask      | (optional) webapp/ only            | Web interface                       | `flask` (pip or conda) |
 | wget/curl  | system (reference auto-download)   | Download hg38 reference from Broad | system package |
@@ -48,7 +48,7 @@ The two environments must be **siblings**: PCGR locates `pcgrr` as
 `--pcgrr_conda <name>` if you rename one.
 
 > **PCGR cannot be run from the pipeline environment.** With
-> `cancer_pipeline` active, `pcgr` is not on `PATH`, so step 12 skips with a
+> `cancer_pipeline` active, `pcgr` is not on `PATH`, so step 13 skips with a
 > warning. Prepending PCGR's `bin/` to `PATH` is *not* a workaround — PCGR
 > resolves its VEP plugin directory from `$CONDA_PREFIX/share`, so a real run
 > then fails with `FileNotFoundError: No ensembl-vep directories found`.
@@ -369,6 +369,13 @@ SnpEff's data directory (`data.dir` in `snpEff.config`):
 Point `data.dir=` at a shared location in `snpEff.config` (or `SNPEFF_DATA`)
 if you want it outside the install.
 
+**One reference, shared.** The pipeline resolves `--reference hg38` against
+`--reference-dir` (default `~/data/references`, where this installer puts it)
+before it considers downloading anything, so every run reuses the one indexed
+copy. Only a genome missing from there is fetched, and it is fetched into that
+directory — never into the run's output directory, which used to mean a 3 GB
+download and a 1–2 hour bwa-mem2 index for each new output folder.
+
 **Adjacency rule.** GATK/bcftools never search directories for indexes — they
 are only found next to their files: VCF → `<name>.vcf.gz.tbi`, BAM →
 `<name>.bam.bai`, FASTA → `.fai`/`.dict`/bwa-mem2 files, SnpEff genome →
@@ -384,8 +391,11 @@ Minimal sets to keep the download volume sane:
   (1.3 MB — the cheapest useful addition on this list).
 - **+ MSI (step 8):** add the MSIsensor2 `models_hg38` directory. The only
   route to an MSI answer on a panel; PCGR omits it.
+- **+ coverage statement (step 12):** no download — pass your panel's BED as
+  `--coverage-bed`. It is what separates "sequenced, wild type" from "never
+  sequenced" in the report, and nothing else in the run can tell them apart.
 
-The pipeline has **13 steps**. Nothing here is required to reach a call set;
+The pipeline has **14 steps**. Nothing here is required to reach a call set;
 each missing resource disables one step and says so.
 
 ## 7. Verification (post-install)
@@ -652,7 +662,7 @@ release-notes link.
 - **PCGR bundle mismatch**: the commonest PCGR failure is a reference data
   bundle whose version does not match the installed `pcgr`. Check the PCGR
   release notes for the bundle that pairs with your version. PCGR is optional
-  throughout: if it or its bundle is missing, step 12 is skipped with a
+  throughout: if it or its bundle is missing, step 13 is skipped with a
   warning and the rest of the run is unaffected.
 - **PCGR reports a suspiciously high TMB**: PCGR filters on depth/allele
   fraction taken from *INFO* tags, but Mutect2 writes those as per-sample
@@ -692,7 +702,7 @@ partial install can be detected rather than discovered later at runtime.
 | 8 | COSMIC VCF | for step 10 | ~1 GB | file exists + index |
 | 8a | `small_exac_common_3.hg38.vcf.gz` | for step 7 (contamination) | ~1.3 MB | file exists + `.tbi` |
 | 8b | MSIsensor2 models `models_hg38` | for step 8 (MSI) | 251 MB | directory of ~2,800 files |
-| 9 | PCGR (2 envs) + bundle + VEP cache | for step 12 | ~6 GB envs + 31 GB data | `conda activate pcgr && pcgr --version` |
+| 9 | PCGR (2 envs) + bundle + VEP cache | for step 13 | ~6 GB envs + 31 GB data | `conda activate pcgr && pcgr --version` |
 | 10 | Flask | for `webapp/` only | ~10 MB | `python -c "import flask"` |
 | 11 | Man page | cosmetic | <1 MB | `man cancer-dna-pipeline` |
 

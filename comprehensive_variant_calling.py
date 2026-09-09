@@ -167,11 +167,14 @@ Output Structure
   ├── annotated/                # SnpEff annotated VCF
   │   └── TUMOUR_01.annotated.vcf
   ├── pcgr/                     # PCGR clinical report (HTML + TSV)
+  ├── coverage/                 # Per-sample target coverage report
+  │                             # (--coverage-bed; HTML/JSON/TSV)
   ├── metrics/                  # Duplicate rates, BQSR tables
   ├── stats/                    # Alignment statistics
   ├── logs/                     # Per-sample logs
   ├── fastp_reports/            # fastp HTML/JSON reports
-  ├── reference/                # Downloaded reference genome
+  ├── reference/                # Only if the shared reference cache
+  │                            # was unwritable -- see --reference-dir
   └── run_manifest_*.json       # Full pipeline record
 
 FFPE MATERIAL
@@ -282,6 +285,23 @@ DEBUGGING NOTES (things that surprise people)
     prints the commands instead. Every one of those was a real bug at some
     point; if you add a side effect, gate it on args.dry_run.
 
+  * A reference named rather than given as a path (--reference hg38) is
+    looked up in the SHARED cache first -- --reference-dir, default
+    ~/data/references, which is where install_pipeline.py puts hg38 and its
+    indices. Only a genome missing from there is downloaded, and it is
+    downloaded into that cache, never into output_dir. Writing it per-run
+    was a real cost: a 3 GB download and a 1-2 hour bwa-mem2 index repeated
+    for every new output directory, producing bytes identical to the ones
+    the last run had already built.
+
+  * A VCF CANNOT SAY "NOT SEQUENCED". A region with no coverage yields no
+    variant, exactly like a region that is wild type, and PCGR reports
+    both as silence -- so a capture dropout reads as a negative result.
+    --coverage-bed measures the panel against the depth a call must reach
+    and names the stretches that fall short, per sample, in
+    <output-dir>/coverage. It is optional and the run proceeds without it;
+    what it costs is the ability to tell those two silences apart.
+
   * COSMIC CONTIG NAMES ARE ENSEMBL-STYLE (1, 2, MT), while hg38 is
     UCSC-style (chr1, chr2, chrM). bcftools annotate matches on contig
     NAME, so an un-renamed COSMIC file annotates nothing and does it
@@ -342,8 +362,23 @@ KNOWN_REFERENCES = {
     "hg38": {
         "url": "https://storage.googleapis.com/gcp-public-data--broad-references/"
                "hg38/v0/Homo_sapiens_assembly38.fasta",
+        # Where install_pipeline.py puts this genome, relative to the
+        # reference cache, and the name it gives it. Matching the installer
+        # is the whole point: a run that names 'hg38' then finds the
+        # already-indexed copy instead of spending two hours rebuilding one.
+        "subdir": "hg38",
+        "filename": "Homo_sapiens_assembly38.fasta",
     },
 }
+
+# Where downloaded genomes live when the run does not name a FASTA of its
+# own. This is deliberately NOT inside output_dir: the reference and its
+# indices are identical for every run, they cost ~20 GB and 1-2 hours of
+# bwa-mem2 indexing to produce, and putting them under the output directory
+# meant every new output directory paid that price again. $PIPELINE_REFERENCE_DIR
+# or --reference-dir moves the cache; the default matches install_pipeline.py.
+DEFAULT_REFERENCE_DIR = os.environ.get(
+    "PIPELINE_REFERENCE_DIR", os.path.expanduser("~/data/references"))
 
 
 # =============================================================================
@@ -657,6 +692,85 @@ def cached_download_is_complete(path, url):
     return True
 
 
+def reference_index_files(fasta):
+    """Every index path ensure_indices() would build for this FASTA."""
+    return [fasta + ".fai", os.path.splitext(fasta)[0] + ".dict",
+            fasta + ".bwt.2bit.64", fasta + ".amb", fasta + ".ann",
+            fasta + ".pac", fasta + ".0123"]
+
+
+def find_cached_reference(name, reference_dir):
+    """
+    An already-downloaded copy of a known genome, or None.
+
+    Looks where install_pipeline.py puts it first, then at the flat layout
+    this script uses when it downloads the genome itself. Only a plausible
+    FASTA counts: an empty or truncated file is ignored so a half-finished
+    download is re-fetched rather than fed to bwa-mem2.
+    """
+    entry = KNOWN_REFERENCES.get(name)
+    if not entry or not reference_dir:
+        return None
+
+    reference_dir = os.path.expanduser(reference_dir)
+    candidates = []
+    if entry.get("subdir") and entry.get("filename"):
+        candidates.append(os.path.join(reference_dir, entry["subdir"],
+                                       entry["filename"]))
+    if entry.get("filename"):
+        candidates.append(os.path.join(reference_dir, entry["filename"]))
+    candidates.append(os.path.join(reference_dir, name, f"{name}.fasta"))
+    candidates.append(os.path.join(reference_dir, f"{name}.fasta"))
+
+    for path in candidates:
+        # 100 MB rules out an error page or an interrupted transfer without
+        # the cost of hashing 3 GB on every run.
+        if os.path.isfile(path) and os.path.getsize(path) > 100 * 1024 ** 2:
+            missing = [os.path.basename(i)
+                       for i in reference_index_files(path)
+                       if not os.path.exists(i)]
+            if missing:
+                print(f"[INFO] Shared reference found without all indices "
+                      f"({', '.join(missing)}); they will be built once, "
+                      f"beside it.")
+            return os.path.abspath(path)
+    return None
+
+
+def reference_cache_target(name, reference_dir, output_dir, dry_run=False):
+    """
+    Where a downloaded genome should be written: (directory, fasta path).
+
+    The shared cache, unless it cannot be created or written -- a read-only
+    or unwritable data directory falls back to output_dir/reference, which
+    is where every run used to put it. The fallback is announced, because a
+    silent one would quietly reintroduce the per-run download this exists
+    to stop.
+    """
+    entry = KNOWN_REFERENCES.get(name, {})
+    filename = entry.get("filename") or f"{name}.fasta"
+    if reference_dir:
+        shared = os.path.join(os.path.expanduser(reference_dir),
+                              entry.get("subdir") or name)
+        if dry_run:
+            return shared, os.path.join(shared, filename)
+        try:
+            os.makedirs(shared, exist_ok=True)
+            if os.access(shared, os.W_OK):
+                return shared, os.path.join(shared, filename)
+            print(f"[WARN] Reference cache {shared} is not writable.")
+        except OSError as exc:
+            print(f"[WARN] Cannot use reference cache {shared}: {exc}")
+
+    fallback = os.path.join(output_dir, "reference")
+    print(f"[WARN] Falling back to {fallback}; this copy is not shared, so "
+          f"the next output directory will download and index its own. "
+          f"Set --reference-dir to somewhere writable to avoid that.")
+    if not dry_run:
+        os.makedirs(fallback, exist_ok=True)
+    return fallback, os.path.join(fallback, filename)
+
+
 def ensure_reference(args):
     """
     Verify or download the reference genome FASTA.
@@ -684,46 +798,64 @@ def ensure_reference(args):
 
     # Check if this is a known genome name (not a file path).
     if ref in KNOWN_REFERENCES and not os.path.isfile(ref):
-        ref_dir = os.path.join(args.output_dir, "reference")
-        os.makedirs(ref_dir, exist_ok=True)
-        local_ref = os.path.join(ref_dir, f"{ref}.fasta")
+        entry = KNOWN_REFERENCES[ref]
+        url = entry["url"]
 
-        url = KNOWN_REFERENCES[ref]["url"]
-        needs_download = True
-        if os.path.exists(local_ref):
-            if dry_run or cached_download_is_complete(local_ref, url):
-                print(f"[INFO] Using cached reference: {local_ref}")
-                needs_download = False
-            else:
-                print("[INFO] Re-downloading the reference.")
+        # Look in the shared cache before deciding to download anything.
+        # An installed genome is already indexed, so finding it here saves
+        # the download AND the 1-2 hour bwa-mem2 index that would follow.
+        cached = find_cached_reference(ref, getattr(args, "reference_dir",
+                                                    DEFAULT_REFERENCE_DIR))
+        if cached:
+            print(f"[INFO] Using the shared reference: {cached}")
+            print("[INFO] Nothing to download; indices are reused as found.")
+            ref = cached
+        else:
+            ref_dir, local_ref = reference_cache_target(
+                ref, getattr(args, "reference_dir", DEFAULT_REFERENCE_DIR),
+                args.output_dir, dry_run=dry_run)
 
-        if needs_download:
-            print(f"[INFO] Downloading reference genome '{ref}' ...")
-            if not download_verified(url, local_ref, dry_run=dry_run):
-                sys.exit(1)
+            needs_download = True
+            if os.path.exists(local_ref):
+                if dry_run or cached_download_is_complete(local_ref, url):
+                    print(f"[INFO] Using cached reference: {local_ref}")
+                    needs_download = False
+                else:
+                    print("[INFO] Re-downloading the reference.")
 
-        # Downstream tools need plain-text FASTA. The Broad GCS bucket
-        # serves hg38 uncompressed, so this normally no-ops -- it is kept
-        # because it still rescues a copy cached from the older gzipped
-        # URL, and any future KNOWN_REFERENCES entry that is compressed.
-        # is_gzipped() returns False for a missing file, so after a dry-run
-        # "download" (which wrote nothing) this branch is simply skipped.
-        if is_gzipped(local_ref):
-            if dry_run:
-                print(f"[DRY RUN] Would decompress reference {local_ref}")
-            else:
-                print(f"[INFO] Decompressing reference {local_ref} ...")
-                tmp_path = local_ref + ".tmp"
-                try:
-                    with gzip.open(local_ref, "rb") as src, \
-                            open(tmp_path, "wb") as dst:
-                        shutil.copyfileobj(src, dst, length=8 * 1024 * 1024)
-                    os.replace(tmp_path, local_ref)
-                except OSError as exc:
-                    print(f"[ERROR] Failed to decompress reference: {exc}")
+            if needs_download:
+                print(f"[INFO] Downloading reference genome '{ref}' into "
+                      f"{ref_dir} ...")
+                print("[INFO] This is a one-off: later runs reuse it from "
+                      "there, whatever their output directory.")
+                if not download_verified(url, local_ref, dry_run=dry_run):
                     sys.exit(1)
 
-        ref = local_ref
+            ref = local_ref
+
+            # Downstream tools need plain-text FASTA. The Broad GCS bucket
+            # serves hg38 uncompressed, so this normally no-ops -- it is
+            # kept because it still rescues a copy cached from the older
+            # gzipped URL, and any future KNOWN_REFERENCES entry that is
+            # compressed. is_gzipped() returns False for a missing file, so
+            # after a dry-run "download" (which wrote nothing) this branch
+            # is simply skipped.
+            if is_gzipped(ref):
+                if dry_run:
+                    print(f"[DRY RUN] Would decompress reference {ref}")
+                else:
+                    print(f"[INFO] Decompressing reference {ref} ...")
+                    tmp_path = ref + ".tmp"
+                    try:
+                        with gzip.open(ref, "rb") as src, \
+                                open(tmp_path, "wb") as dst:
+                            shutil.copyfileobj(src, dst,
+                                               length=8 * 1024 * 1024)
+                        os.replace(tmp_path, ref)
+                    except OSError as exc:
+                        print(f"[ERROR] Failed to decompress reference: "
+                              f"{exc}")
+                        sys.exit(1)
 
     ref = os.path.abspath(ref)
     if not os.path.isfile(ref):
@@ -2893,6 +3025,12 @@ _RESUME_IGNORED_PARAMS = frozenset({
     "pcgr_estimate_signatures",
     "pcgr_lift_tags", "pcgr_tumor_dp_tag", "pcgr_tumor_af_tag",
     "pcgr_legacy_v1", "pcgr_extra_args",
+    # The coverage check only reads the finished BAMs and writes its own
+    # directory, so changing the BED or its thresholds invalidates nothing
+    # earlier. --reference-dir likewise: it says where the reference is
+    # kept, not which reference is used.
+    "coverage_bed", "coverage_min_depth", "coverage_min_mapq",
+    "coverage_min_baseq", "reference_dir",
 })
 
 
@@ -3115,6 +3253,14 @@ def build_parser():
                     help="Directory for all pipeline outputs.")
     io.add_argument("-r", "--reference", required=True,
                     help="Reference genome FASTA or known name (e.g. 'hg38').")
+    io.add_argument("--reference-dir", default=DEFAULT_REFERENCE_DIR,
+                    help="Shared directory holding downloaded genomes and "
+                         "their indices, used when --reference names a "
+                         "genome rather than a FASTA. Kept out of the "
+                         "output directory so every run reuses one copy "
+                         "instead of downloading and indexing its own "
+                         f"(default: {DEFAULT_REFERENCE_DIR}, or "
+                         "$PIPELINE_REFERENCE_DIR).")
     io.add_argument("--manifest", default=None,
                     help="Path to a fastq_qc_clean.py run manifest JSON. "
                          "When provided, cleaned FASTQ paths, sample names, "
@@ -3197,6 +3343,27 @@ def build_parser():
                           "protocol leaves behind. Use the panel "
                           "manufacturer's BED, in the same contig naming as "
                           "the reference.")
+    res.add_argument("--coverage-bed", default=None,
+                     help="Target regions to check for coverage before the "
+                          "clinical report is written (BED). Every region is "
+                          "measured against the depth a call must reach, and "
+                          "the stretches that fall short are named in a "
+                          "per-sample HTML report under <output-dir>/coverage. "
+                          "Without it the run makes no coverage statement at "
+                          "all: an unsequenced exon and a wild-type exon look "
+                          "identical in the VCF and identical in the report. "
+                          "Optional -- the run proceeds without the step when "
+                          "no BED can be provided.")
+    res.add_argument("--coverage-min-depth", type=int, default=None,
+                     help="Depth a base must reach to count as covered "
+                          "(default: --min-depth, the depth below which a "
+                          "call would be filtered out anyway).")
+    res.add_argument("--coverage-min-mapq", type=int, default=20,
+                     help="Ignore reads below this mapping quality when "
+                          "measuring coverage (default: 20).")
+    res.add_argument("--coverage-min-baseq", type=int, default=20,
+                     help="Ignore bases below this base quality when "
+                          "measuring coverage (default: 20).")
     res.add_argument("--interval-padding", type=int, default=0,
                      help="Bases to extend each interval by on both sides "
                           "(GATK --interval-padding). 50-100 is usual for "
@@ -3405,7 +3572,7 @@ def build_parser():
     runtime.add_argument("--skip-steps", nargs="*", default=[],
                          help="Skip pipeline stages: qc, align, dedup, bqsr, "
                               "mutect2, contamination, msi, filter, cosmic, "
-                              "annotate, pcgr.")
+                              "annotate, coverage, pcgr.")
     runtime.add_argument("--resume", action="store_true",
                          help="Reuse pipeline steps whose output already "
                               "exists in --output-dir, instead of redoing "
@@ -3612,6 +3779,7 @@ def main():
         "mutect2": os.path.join(output_dir, "mutect2"),
         "annotated": os.path.join(output_dir, "annotated"),
         "pcgr": os.path.join(output_dir, "pcgr"),
+        "coverage": os.path.join(output_dir, "coverage"),
         "metrics": os.path.join(output_dir, "metrics"),
         "stats": os.path.join(output_dir, "stats"),
         "logs": os.path.join(output_dir, "logs"),
@@ -3811,7 +3979,7 @@ def main():
     # STEP 1: QC & CLEANING
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 1/13: QC & Cleaning (fastp)")
+    print("# STEP 1/14: QC & Cleaning (fastp)")
     print(f"{'#' * 72}")
 
     tumour_r1_clean = os.path.join(dirs["cleaned"],
@@ -3883,7 +4051,7 @@ def main():
     # STEP 2: ALIGNMENT
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 2/13: Alignment (BWA-MEM2)")
+    print("# STEP 2/14: Alignment (BWA-MEM2)")
     print(f"{'#' * 72}")
 
     tumour_bam = os.path.join(dirs["align"], f"{tumour['name']}.sorted.bam")
@@ -3961,7 +4129,7 @@ def main():
     # STEP 3: DUPLICATE MARKING
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 3/13: Duplicate Marking (GATK)")
+    print("# STEP 3/14: Duplicate Marking (GATK)")
     print(f"{'#' * 72}")
 
     tumour_dedup = os.path.join(dirs["dedup"],
@@ -4013,7 +4181,7 @@ def main():
     # STEP 4: BQSR
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 4/13: Base Quality Score Recalibration (BQSR)")
+    print("# STEP 4/14: Base Quality Score Recalibration (BQSR)")
     print(f"{'#' * 72}")
 
     tumour_bqsr = os.path.join(dirs["bqsr"],
@@ -4074,7 +4242,7 @@ def main():
     # STEP 5: MUTECT2 VARIANT CALLING
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 5/13: Somatic Variant Calling (GATK Mutect2)")
+    print("# STEP 5/14: Somatic Variant Calling (GATK Mutect2)")
     print(f"{'#' * 72}")
 
     mutect2_vcf = os.path.join(dirs["mutect2"],
@@ -4110,7 +4278,7 @@ def main():
     # STEP 6: STRAND BIAS MODELLING
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 6/13: Strand Bias Modelling (LearnReadOrientation)")
+    print("# STEP 6/14: Strand Bias Modelling (LearnReadOrientation)")
     print(f"{'#' * 72}")
 
     orientation_model = os.path.join(dirs["mutect2"],
@@ -4132,7 +4300,7 @@ def main():
     # STEP 7: CONTAMINATION ESTIMATION
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 7/13: Contamination Estimation (GATK)")
+    print("# STEP 7/14: Contamination Estimation (GATK)")
     print(f"{'#' * 72}")
 
     # Enrichment, not a dependency: contamination_table stays None unless
@@ -4187,7 +4355,7 @@ def main():
     # STEP 8: MICROSATELLITE INSTABILITY
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 8/13: Microsatellite Instability (MSIsensor2)")
+    print("# STEP 8/14: Microsatellite Instability (MSIsensor2)")
     print(f"{'#' * 72}")
 
     msi_result = None
@@ -4213,7 +4381,7 @@ def main():
     # STEP 9: MUTECT2 CALL FILTERING
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 9/13: Filtering Mutect2 Calls")
+    print("# STEP 9/14: Filtering Mutect2 Calls")
     print(f"{'#' * 72}")
 
     filtered_vcf = os.path.join(dirs["mutect2"],
@@ -4268,7 +4436,7 @@ def main():
     # STEP 10: COSMIC ANNOTATION
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 10/13: COSMIC Database Annotation")
+    print("# STEP 10/14: COSMIC Database Annotation")
     print(f"{'#' * 72}")
 
     cosmic_vcf = os.path.join(dirs["mutect2"],
@@ -4314,7 +4482,7 @@ def main():
     # STEP 11: SnpEff ANNOTATION
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 11/13: Gene Annotation (SnpEff)")
+    print("# STEP 11/14: Gene Annotation (SnpEff)")
     print(f"{'#' * 72}")
 
     annotated_vcf = os.path.join(dirs["annotated"],
@@ -4346,10 +4514,93 @@ def main():
         print("[SKIP] SnpEff annotation skipped.")
 
     # ================================================================
-    # STEP 12: PCGR CLINICAL REPORT
+    # STEP 12: TARGET COVERAGE CHECK
+    # ================================================================
+    # Deliberately BEFORE the report: a region the sequencing never covered
+    # produces no variant, and a VCF cannot distinguish that from a region
+    # that is genuinely wild type. Both reach PCGR as silence. This is the
+    # only place in the run where that difference is written down.
+    print(f"\n{'#' * 72}")
+    print("# STEP 12/14: Target Coverage Check")
+    print(f"{'#' * 72}")
+
+    coverage_reports = []
+    if not args.coverage_bed:
+        print("[SKIP] No --coverage-bed given, so no coverage statement is "
+              "made. Absent variants in this run cannot be told apart from "
+              "unsequenced regions.")
+    elif not should_run("coverage"):
+        print("[SKIP] Coverage check skipped (--skip-steps coverage).")
+    else:
+        try:
+            from coverage_report import run_coverage_check
+        except ImportError as exc:
+            print(f"[WARN] coverage_report.py not importable ({exc}); "
+                  f"skipping the coverage check.")
+            run_coverage_check = None
+
+        if run_coverage_check is not None:
+            cov_dir = dirs["coverage"]
+            depth_floor = args.coverage_min_depth or args.min_depth
+            # Both samples are checked. A gap in the NORMAL is just as
+            # capable of hiding a somatic call: with nothing to compare
+            # against, Mutect2 has no evidence the site is somatic.
+            targets = [(tumour["name"], tumour_bqsr)]
+            if normal and normal_bqsr:
+                targets.append((normal["name"], normal_bqsr))
+
+            for name, bam in targets:
+                print(f"[INFO] Checking {args.coverage_bed} against {name} "
+                      f"at {depth_floor}x ...")
+                result = run_coverage_check(
+                    bam, args.coverage_bed, name, cov_dir,
+                    min_depth=depth_floor,
+                    min_mapq=args.coverage_min_mapq,
+                    min_baseq=args.coverage_min_baseq,
+                    dry_run=args.dry_run)
+                if args.dry_run:
+                    # measure() has already printed the samtools command it
+                    # would run; nothing was measured, so there is nothing
+                    # to report and nothing to warn about.
+                    print(f"[DRY RUN] Would write {cov_dir}/"
+                          f"{name}.coverage.html")
+                    continue
+                if not result["ok"]:
+                    # Never fatal. The calls are already on disk and cost
+                    # hours; a missing coverage statement is a caveat on
+                    # them, not a reason to throw them away.
+                    print(f"[WARN] Coverage report for {name} not produced: "
+                          f"{result['error']}")
+                    continue
+                summary = result["summary"]
+                coverage_reports.append(result)
+                print(f"[OK] {name}: "
+                      f"{summary['regions_fully_covered']}/"
+                      f"{summary['regions']} regions fully covered at "
+                      f"{depth_floor}x -> {result['html']}")
+                if not summary["all_covered"]:
+                    print(f"[WARN] {name}: "
+                          f"{summary['bases_below_threshold']:,} target "
+                          f"bases below {depth_floor}x "
+                          f"({summary['regions_absent']} regions with no "
+                          f"usable coverage). A variant in those stretches "
+                          f"would be absent from the VCF whether or not it "
+                          f"is there.")
+
+            if coverage_reports:
+                manifest["steps_completed"].append("coverage")
+                manifest["coverage_bed"] = os.path.abspath(args.coverage_bed)
+                manifest["coverage_reports"] = [
+                    {"sample": r["sample"], "html": r["html"],
+                     "json": r["json"], "tsv": r["tsv"],
+                     "summary": r["summary"]}
+                    for r in coverage_reports]
+
+    # ================================================================
+    # STEP 13: PCGR CLINICAL REPORT
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 12/13: Clinical Interpretation Report (PCGR)")
+    print("# STEP 13/14: Clinical Interpretation Report (PCGR)")
     print(f"{'#' * 72}")
 
     if should_run("pcgr") and args.pcgr_refdata_dir:
@@ -4450,7 +4701,7 @@ def main():
     # STEP 13: SUMMARY STATISTICS
     # ================================================================
     print(f"\n{'#' * 72}")
-    print("# STEP 13/13: Summary Statistics")
+    print("# STEP 14/14: Summary Statistics")
     print(f"{'#' * 72}")
 
     if os.path.exists(filtered_vcf):

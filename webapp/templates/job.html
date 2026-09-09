@@ -78,9 +78,14 @@
   </div>
   <div class="bar big"><span id="bar" style="width: {{ job.percent }}%"></span></div>
   <p class="small"><span id="steptext">{{ job.step }}/{{ job.total_steps or '?' }}</span> steps</p>
+  <p class="small" id="pcgrnote">
+    {%- if job.status == 'reporting' %}The pipeline has finished; PCGR is
+    running now. It takes up to an hour, and the run is not complete until
+    it returns &mdash; the report buttons appear then.
+    {%- elif job.pcgr_status %}Clinical report: {{ job.pcgr_status }}.{% endif %}</p>
 
   <div class="actions">
-    {% if job.status in ['running', 'queued'] %}
+    {% if job.status in ['running', 'queued', 'reporting'] %}
       <form method="post" action="{{ url_for('job_cancel', job_id=job.id) }}">
         <button class="button danger" type="submit">Cancel run</button>
       </form>
@@ -93,6 +98,18 @@
     {% endif %}
     <a class="button ghost" href="{{ url_for('job_log', job_id=job.id) }}">Full log</a>
   </div>
+  <div class="actions" id="coverage">
+    {% for index, sample in coverage %}
+      <a class="button ghost" target="_blank"
+         href="{{ url_for('job_coverage', job_id=job.id, index=index) }}">
+        Coverage: {{ sample }}</a>
+    {% endfor %}
+  </div>
+  {% if not coverage and coverage_bed %}
+    <p class="small" id="covhint">Target coverage against
+      <code>{{ coverage_bed }}</code> is checked after alignment; the report
+      appears here as soon as it is written.</p>
+  {% endif %}
   {% if job.error %}<p class="errortext">{{ job.error }}</p>{% endif %}
 </section>
 
@@ -140,6 +157,37 @@ async function poll() {
     document.getElementById('bar').style.width = j.percent + '%';
     document.getElementById('steptext').textContent =
       j.step + '/' + (j.total_steps || '?');
+
+    // Coverage reports land mid-run, before PCGR. Show each one the moment
+    // it exists rather than making the reader wait for the run to end --
+    // an early look at a dropout is what lets a run be stopped and redone.
+    const cov = document.getElementById('coverage');
+    if (cov && (data.coverage || []).length !== cov.children.length) {
+      cov.textContent = '';
+      for (const c of data.coverage) {
+        const a = document.createElement('a');
+        a.className = 'button ghost';
+        a.target = '_blank';
+        a.href = `/job/${jobId}/coverage/${c.index}`;
+        a.textContent = 'Coverage: ' + c.sample;
+        cov.appendChild(a);
+      }
+      const hint = document.getElementById('covhint');
+      if (hint && data.coverage.length) hint.remove();
+    }
+
+    // The PCGR phase is silent in the log for long stretches, so say what
+    // is happening rather than leaving a full-looking bar unexplained.
+    const note = document.getElementById('pcgrnote');
+    if (j.status === 'reporting') {
+      note.textContent = 'The pipeline has finished; PCGR is running now. ' +
+        'It takes up to an hour, and the run is not complete until it ' +
+        'returns \u2014 the report buttons appear then.';
+    } else if (j.pcgr_status) {
+      note.textContent = 'Clinical report: ' + j.pcgr_status + '.';
+    } else {
+      note.textContent = '';
+    }
 
     // Only scroll the log if the user is already at the bottom, so reading
     // back through it is not yanked away on every poll.

@@ -57,8 +57,17 @@
                placeholder="/data/results/RUN01"></label>
       <label><span>Reference</span>
         <input name="reference" required
-               value="{{ (form or {}).get('reference', 'hg38') }}"
+               value="{{ (form or {}).get('reference') or (defaults or {}).get('reference', 'hg38') }}"
                placeholder="/data/hg38.fa or hg38"></label>
+      <label><span>Shared reference directory</span>
+        <input name="reference_dir"
+               value="{{ (form or {}).get('reference_dir') or (defaults or {}).get('reference_dir', '') }}"
+               placeholder="~/data/references">
+        <span class="hint">Used only when the field above names a genome
+          (<code>hg38</code>) instead of a FASTA. The download and its
+          1&ndash;2 hour index land here and are reused by every run &mdash;
+          they used to be written into each new output directory, which
+          bought the same wait again each time.</span></label>
       <label><span>QC manifest (optional)</span>
         <input name="manifest" value="{{ (form or {}).get('manifest', '') }}"
                placeholder="qc_out/run_manifest_*.json"></label>
@@ -118,9 +127,19 @@
       <label><span>Target intervals (BED)</span><input name="intervals" value="{{ (form or {}).get('intervals','') }}"></label>
       <label><span>Interval padding (bp)</span><input name="interval_padding" type="number" min="0" value="{{ (form or {}).get('interval_padding','') }}"></label>
       <label><span>Minimum depth</span><input name="min_depth" type="number" min="0" value="{{ (form or {}).get('min_depth','') }}"></label>
+      <label><span>Coverage BED (optional)</span><input name="coverage_bed" value="{{ (form or {}).get('coverage_bed','') }}" placeholder="/data/panel.bed"></label>
+      <label><span>Coverage depth threshold</span><input name="coverage_min_depth" type="number" min="1" value="{{ (form or {}).get('coverage_min_depth','') }}" placeholder="same as minimum depth"></label>
       <label><span>Panel size (Mb, for TMB)</span><input name="pcgr_target_size_mb" type="number" step="0.01" min="0" value="{{ (form or {}).get('pcgr_target_size_mb','') }}"></label>
     </div>
     <p class="hint">BQSR runs only when dbSNP or known indels are supplied.</p>
+    <p class="hint">The coverage BED is checked against the alignments before
+      the clinical report is written, and every region that fails to reach
+      the depth threshold is named in a per-sample HTML report you can open
+      from the run page while the run is still going. It answers the one
+      question a VCF cannot: a region nobody sequenced and a region that is
+      wild type both appear as no variant, and only this tells them apart.
+      Leave it blank and the run proceeds without the step &mdash; it simply
+      makes no coverage statement.</p>
     <label class="check"><input type="checkbox" name="minimal_run"
       {% if (form or {}).get('minimal_run') %}checked{% endif %}>
       Minimal run &mdash; do <em>not</em> auto-fill missing resources

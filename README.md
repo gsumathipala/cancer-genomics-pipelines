@@ -120,11 +120,13 @@ conda keeps its environments.
 install_pipeline.py               the installer
 environment.yml                   the analysis environment definition
 
-comprehensive_variant_calling.py  the engine — all 12 steps, self-contained
+comprehensive_variant_calling.py  the engine — all 14 steps, self-contained
 align_reads.py                    stage 2 standalone
 fastq_qc_clean.py                 stage 1 standalone
 pipeline_orchestrator.py          chains the three stages
 pcgr_report.py                    clinical report wrapper
+coverage_report.py                target coverage: which regions a negative
+                                  result is actually entitled to speak for
 cancer-dna-pipeline.1             man page
 
 webapp/                           Flask front end (patient details, batch, cleanup)

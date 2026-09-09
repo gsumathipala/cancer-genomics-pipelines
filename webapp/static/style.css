@@ -108,6 +108,9 @@ dl.kv dd { margin: 0; word-break: break-word; }
 .status.running  { background: #e6f0ff; color: var(--accent); }
 .status.queued   { background: #f0eef8; color: #6b4fbb; }
 .status.finished { background: #e7f5ec; color: var(--ok); }
+/* Still working -- the pipeline is done but the report is not, so
+   this must not read as a finished run. */
+.status.reporting { background: #e6f0ff; color: var(--accent); }
 .status.failed,
 .status.interrupted { background: #fdeceb; color: var(--bad); }
 .status.cancelled { background: #fdf3e0; color: var(--warn); }

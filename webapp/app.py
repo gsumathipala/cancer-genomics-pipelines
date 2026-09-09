@@ -200,6 +200,12 @@ DEFAULT_RESOURCES = {
         f"{_DATA}/resources/hg38/Cosmic_GenomeScreensMutant_v103_GRCh38"
         f".chr.vcf.gz",
     "vep_dir": f"{_DATA}/vep_cache",
+    # The genome install_pipeline.py downloads and indexes. Offering the
+    # installed FASTA rather than the name "hg38" is what stops the pipeline
+    # downloading and re-indexing a private copy for every new output
+    # directory; --reference-dir covers the case where it must download.
+    "reference": f"{_DATA}/references/hg38/Homo_sapiens_assembly38.fasta",
+    "reference_dir": f"{_DATA}/references",
     # Tumour-only MSI. PCGR omits MSI on a panel, so this is the only route
     # to an MSI answer for a targeted assay.
     "msi_models": f"{_DATA}/msisensor2/models_hg38",
@@ -343,8 +349,8 @@ def submit():
 
     for optional in ("cosmic", "dbsnp", "germline_resource",
                      "panel_of_normals", "contamination_resource",
-                     "msi_models", "intervals", "pcgr_refdata_dir",
-                     "vep_dir"):
+                     "msi_models", "intervals", "coverage_bed",
+                     "pcgr_refdata_dir", "vep_dir", "reference_dir"):
         if form.get(optional):
             try:
                 resolved[optional] = safe_path(form[optional], must_exist=True)
@@ -587,6 +593,12 @@ def run_warnings(meta):
     if not meta.get("cosmic"):
         notes.append("No COSMIC VCF: calls carry no known-mutation "
                      "identifiers.")
+    if not meta.get("coverage_bed"):
+        notes.append(
+            "No target BED, so the run makes no coverage statement. Nothing "
+            "distinguishes a region that was sequenced and is wild type from "
+            "one the sequencing never reached: both are simply absent from "
+            "the VCF and absent from the report.")
     if not meta.get("pcgr_refdata_dir"):
         notes.append(
             "No PCGR reference bundle, so no clinical report was produced -- "
@@ -618,6 +630,13 @@ def run_warnings(meta):
     return notes
 
 
+def coverage_links(job):
+    """[(index, sample name)] for each coverage report this run has written."""
+    return [(i, os.path.basename(p)[:-len(".coverage.html")])
+            for i, p in enumerate(
+                jobs.find_coverage_reports(job.meta.get("output_dir")))]
+
+
 def render_job(job, notice=None, notice_kind="ok"):
     """
     Render the job page.
@@ -640,7 +659,9 @@ def render_job(job, notice=None, notice_kind="ok"):
         batch_of=job.meta.get("batch_of"),
         auto_applied=[k for k in
                       (job.meta.get("auto_applied_resources") or
-                       "").split() if k])
+                       "").split() if k],
+        coverage=coverage_links(job),
+        coverage_bed=job.meta.get("coverage_bed"))
 
 
 @app.route("/job/<job_id>")
@@ -652,7 +673,11 @@ def job_view(job_id):
 def job_api(job_id):
     """Polled by the job page for live status and log tail."""
     job = manager.get(job_id) or abort(404)
-    return jsonify({"job": job.snapshot(), "log": job.tail()})
+    # The coverage reports are written mid-run, before PCGR; the page shows
+    # the link the moment the file lands rather than at the end of the run.
+    return jsonify({"job": job.snapshot(), "log": job.tail(),
+                    "coverage": [{"index": i, "sample": name}
+                                 for i, name in coverage_links(job)]})
 
 
 @app.route("/job/<job_id>/cancel", methods=["POST"])
@@ -669,6 +694,13 @@ def job_report(job_id):
     output_dir = job.meta.get("output_dir")
     if not output_dir:
         abort(400, "this run has no recorded output directory")
+    # The buttons are hidden during the report phase, but the URL is not, and
+    # a PDF built now would state "PCGR did not run for this analysis" about
+    # a PCGR that is running as it is being written.
+    if job.status == "reporting":
+        abort(409, "PCGR is still running for this job; the PDF would record "
+                   "that no clinical report exists. Wait for the run to "
+                   "finish.")
 
     pdf_path = os.path.join(job.run_dir, f"report_{job_id}.pdf")
     try:
@@ -744,6 +776,8 @@ def job_results(job_id):
     pdf_path = os.path.join(job.run_dir, f"report_{job_id}.pdf")
     return render_template("results.html", job=job.snapshot(),
                            manifest=manifest, pcgr=pcgr,
+                           coverage=coverage_links(job),
+                           coverage_bed=job.meta.get("coverage_bed"),
                            has_pdf=os.path.exists(pdf_path),
                            patient=job.patient,
                            patient_fields=PATIENT_FIELDS)
@@ -763,6 +797,27 @@ def job_pcgr(job_id):
     if not pcgr["html"]:
         abort(404, "no PCGR report found for this run")
     return send_file(pcgr["html"][0])
+
+
+@app.route("/job/<job_id>/coverage")
+@app.route("/job/<job_id>/coverage/<int:index>")
+def job_coverage(job_id, index=0):
+    """
+    Serve one sample's target-coverage report.
+
+    Like the PCGR route, the file is chosen from the run's own coverage
+    directory by index -- never from a path in the request. Available as
+    soon as the pipeline has written it, which is while the run is still
+    going: that is the point of it.
+    """
+    job = manager.get(job_id) or abort(404)
+    reports = jobs.find_coverage_reports(job.meta.get("output_dir"))
+    if not reports:
+        abort(404, "no coverage report for this run -- it needs a target "
+                   "BED, and this run was submitted without one")
+    if index < 0 or index >= len(reports):
+        abort(404, "no coverage report at that index")
+    return send_file(reports[index])
 
 
 @app.route("/job/<job_id>/log")
