@@ -425,7 +425,7 @@ def submit():
 
     # PCGR runs as a follow-up in its own conda environment -- it cannot run
     # inside the pipeline's, so passing --pcgr-refdata-dir alone would leave
-    # step 11 reporting itself as skipped and no report on disk.
+    # step 12 reporting itself as skipped and no report on disk.
     pcgr_form = merged if merged.get("pcgr_refdata_dir") else None
 
     # --- batch: one queued job per sample, each its own output directory ---

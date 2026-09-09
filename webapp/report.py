@@ -280,7 +280,7 @@ def build_report(patient, run, output_dir, pdf_path):
         doc.paragraph(
             "PCGR did not run for this analysis, so no actionability tiers, "
             "TMB or mutational-signature results are available. Re-run with "
-            "--pcgr-refdata-dir to enable it.", size=9, grey=0.35)
+            "a PCGR reference bundle set to enable it.", size=9, grey=0.35)
 
     if pcgr["html"]:
         doc.heading("Full report files", 3)
@@ -309,8 +309,9 @@ def build_report(patient, run, output_dir, pdf_path):
         "bases and require review by a qualified molecular pathologist "
         "against the current literature.",
         "Tumour mutational burden is only meaningful when depth and allele "
-        "fraction were available to PCGR; see the pipeline's --pcgr-lift-tags "
-        "option and the run log.",
+        "fraction were available to PCGR. Both are lifted from FORMAT into "
+        "INFO before the report is built; the run log records whether that "
+        "step found them.",
     ):
         doc.paragraph("- " + line, size=9)
 

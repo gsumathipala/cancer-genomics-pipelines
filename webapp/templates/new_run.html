@@ -168,11 +168,10 @@
           {% endfor %}
         </select></label>
     </div>
-    <label class="check"><input type="checkbox" name="pcgr_lift_tags" checked>
-      Lift FORMAT depth/allele-fraction into INFO tags
-      <span class="hint inline">&mdash; without this PCGR has nothing to
-      filter on and the reported TMB is computed over unfiltered calls.</span>
-    </label>
+    <p class="hint">Depth and allele fraction are always lifted from FORMAT
+      into INFO tags before the report is built &mdash; without them PCGR has
+      nothing to filter on and the reported TMB would be computed over
+      unfiltered calls, so this is not offered as a choice.</p>
     <label class="check"><input type="checkbox" name="pcgr_estimate_tmb"
       {% if form is not defined or not form %}{% if (defaults or {}).get('pcgr_estimate_tmb') %}checked{% endif %}{% elif (form or {}).get('pcgr_estimate_tmb') %}checked{% endif %}>
       Estimate tumour mutational burden

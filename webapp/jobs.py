@@ -719,8 +719,6 @@ def build_pipeline_argv(python_exe, script, form):
         argv += ["--min-depth", str(form["min_depth"])]
     if form.get("min_allele_fraction"):
         argv += ["--min-allele-fraction", str(form["min_allele_fraction"])]
-    if form.get("pcgr_target_size_mb"):
-        argv += ["--pcgr-target-size-mb", str(form["pcgr_target_size_mb"])]
 
     if form.get("threads"):
         argv += ["--threads", str(form["threads"])]
@@ -731,14 +729,17 @@ def build_pipeline_argv(python_exe, script, form):
     if form.get("dry_run"):
         argv += ["--dry-run"]
 
-    if form.get("pcgr_refdata_dir"):
-        argv += ["--pcgr-refdata-dir", form["pcgr_refdata_dir"]]
-        if form.get("vep_dir"):
-            argv += ["--vep-dir", form["vep_dir"]]
-        if form.get("pcgr_assay"):
-            argv += ["--pcgr-assay", form["pcgr_assay"]]
-        if form.get("pcgr_lift_tags"):
-            argv += ["--pcgr-lift-tags"]
+    # No PCGR options are passed, deliberately. PCGR lives in its own conda
+    # environment and cannot run inside the pipeline's, so this app always
+    # produces the report itself afterwards -- see build_pcgr_argv(). Asking
+    # the pipeline for it as well only ever hurt: on a normal install its
+    # step 12 announced "[SKIP] PCGR skipped (pcgr ... unavailable)" after
+    # doing the FORMAT->INFO lift for a report it could not run, and where
+    # pcgr HAD been installed alongside the pipeline it ran a second, hours-
+    # long PCGR into the same output_dir/pcgr with settings this builder
+    # never emitted -- no tumour site, no TMB/MSI/signature estimates -- so
+    # which report survived depended on which finished last. Leaving
+    # --pcgr-refdata-dir off makes the pipeline say so plainly instead.
 
     if form.get("skip_steps"):
         argv += ["--skip-steps"] + form["skip_steps"].split()
