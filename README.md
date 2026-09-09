@@ -112,6 +112,12 @@ disagree for reasons unrelated to the samples.
 Change the data location with `--data-dir`. The conda environments go wherever
 conda keeps its environments.
 
+Every run reuses that one indexed hg38: `--reference hg38` is resolved against
+`--reference-dir` (default `~/data/references`) before anything is downloaded,
+so a new output directory costs nothing. Only a genome missing from there is
+fetched, and it is fetched into that shared directory rather than into the
+run.
+
 ---
 
 ## Contents of this bundle
@@ -139,8 +145,8 @@ check_db_updates.py               tells you when a database has a newer release
 ```
 
 **Keep the Python files in one directory.** The orchestrator locates its
-siblings relative to itself, and the variant caller imports `pcgr_report` from
-alongside it. The flat layout is deliberate.
+siblings relative to itself, and the variant caller imports `pcgr_report` and
+`coverage_report` from alongside it. The flat layout is deliberate.
 
 ---
 
@@ -191,6 +197,12 @@ Specifically not yet established:
   waits on 10+ normals sequenced on the same assay, in the same lab, at the
   same fixation state. Every tool it needs is already present or one conda
   package away.
+- **A negative is only as good as its coverage.** A region the sequencing
+  never reached produces no variant, exactly like a region that is wild type,
+  and a VCF cannot say which happened. Pass your panel BED as `--coverage-bed`
+  and the run writes a per-sample report naming every region that missed the
+  depth threshold; without one, absence of a finding carries no information
+  about whether the region was even looked at.
 - **No tumour purity or HRD scoring**, so variant allele fractions are
   uncorrected and clonality is not claimed.
 - **Tumour-only TMB is unreliable** — PCGR says so itself — and should not be

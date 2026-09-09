@@ -62,7 +62,18 @@ PIPELINE STEPS
       - Adds gene names, consequence types (missense, nonsense, etc.),
         and predicted impact (HIGH/MODERATE/LOW/MODIFIER).
 
-  STEP 12: Clinical Interpretation Report (PCGR)
+  STEP 12: Target Coverage Check
+      - Optional. Measures every region of --coverage-bed against the depth
+        a call must reach and names the stretches that fall short, per
+        sample, as HTML/JSON/TSV under <output-dir>/coverage.
+      - It answers what the VCF cannot: a region nobody sequenced and a
+        region that is wild type both yield no variant, so without this a
+        capture dropout reads as a negative result all the way into the
+        clinical report.
+      - Runs only when --coverage-bed is given; skipped otherwise, and the
+        run says so. Implemented in the sibling module coverage_report.py.
+
+  STEP 13: Clinical Interpretation Report (PCGR)
       - Optional. Therapeutic actionability tiered by AMP/ASCO/CAP, as a
         self-contained HTML report.
       - TMB, MSI and COSMIC mutational-signature fitting (SBS3/HRD, MMR,
@@ -72,7 +83,7 @@ PIPELINE STEPS
       - Runs only when --pcgr-refdata-dir is given; skipped otherwise.
         Implemented in the sibling module pcgr_report.py.
 
-  STEP 13: Summary Statistics
+  STEP 14: Summary Statistics
       - VCF stats, variant counts by type, COSMIC overlap counts.
 
 COSMIC DATABASE

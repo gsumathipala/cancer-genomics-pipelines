@@ -5,9 +5,10 @@
 # SCOPE: this covers the WEB INTERFACE ONLY.
 #
 # The analysis scripts -- fastq_qc_clean.py, align_reads.py,
-# comprehensive_variant_calling.py, pipeline_orchestrator.py and
-# pcgr_report.py -- import nothing outside the Python standard library and
-# will run against a bare Python 3.8+ with this file never installed.
+# comprehensive_variant_calling.py, pipeline_orchestrator.py,
+# pcgr_report.py and coverage_report.py -- import nothing outside the Python
+# standard library and will run against a bare Python 3.8+ with this file
+# never installed.
 #
 # They do, however, need the external bioinformatics TOOLS (fastp, bwa-mem2,
 # samtools, GATK, bcftools, SnpEff). Those are not pip packages; install them

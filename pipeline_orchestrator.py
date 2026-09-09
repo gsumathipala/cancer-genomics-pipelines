@@ -71,6 +71,12 @@ NOTES
 -----
   * Stage 3 requires the newest comprehensive_variant_calling.py with
     --manifest support (this repo).
+  * Stages 2 and 3 both take --reference hg38 in the examples above, and
+    both resolve that name against the shared --reference-dir (default
+    ~/data/references) before considering a download, so they share one
+    genome and one set of indices. It used to be two downloads and two
+    1-2 hour bwa-mem2 indexes, one under each stage's own output
+    directory, for bytes that were identical.
   * The exact command for each stage is PRINTED to the console just before
     that stage runs, and each stage writes its own per-sample logs beneath
     its own output directory. --log-dir holds only this orchestrator's

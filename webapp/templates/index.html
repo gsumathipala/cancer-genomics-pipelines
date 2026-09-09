@@ -31,7 +31,9 @@
 {% if busy %}
   <p class="note">A run is in progress. New submissions are queued and start
   when it finishes &mdash; the pipeline is already parallel internally, so
-  running two at once would only contend for the same CPUs and memory.</p>
+  running two at once would only contend for the same CPUs and memory. A run
+  showing <em>reporting</em> still counts: its clinical report is being
+  built, and the run is not done until that is.</p>
 {% endif %}
 
 {% if not jobs %}

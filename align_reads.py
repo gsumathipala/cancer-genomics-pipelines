@@ -141,8 +141,20 @@ KNOWN_REFERENCES = {
     "hg38": {
         "url": "https://storage.googleapis.com/gcp-public-data--broad-references/"
                "hg38/v0/Homo_sapiens_assembly38.fasta",
+        # Where install_pipeline.py puts this genome, relative to the
+        # reference cache, and the name it gives it.
+        "subdir": "hg38",
+        "filename": "Homo_sapiens_assembly38.fasta",
     },
 }
+
+# Shared cache for downloaded genomes, deliberately outside the output
+# directory: the reference and its indices are identical for every run and
+# cost ~20 GB and 1-2 hours of bwa-mem2 indexing, so a per-run copy bought
+# that wait again for every new -o. Mirrors
+# comprehensive_variant_calling.py -- keep the two in step.
+DEFAULT_REFERENCE_DIR = os.environ.get(
+    "PIPELINE_REFERENCE_DIR", os.path.expanduser("~/data/references"))
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +433,83 @@ def cached_download_is_complete(path, url):
     return True
 
 
+def reference_index_files(fasta):
+    """Every index path ensure_indices() would build for this FASTA."""
+    return [fasta + ".fai", os.path.splitext(fasta)[0] + ".dict",
+            fasta + ".bwt.2bit.64", fasta + ".amb", fasta + ".ann",
+            fasta + ".pac", fasta + ".0123"]
+
+
+def find_cached_reference(name, reference_dir):
+    """
+    An already-downloaded copy of a known genome, or None.
+
+    Looks where install_pipeline.py puts it first, then at the flat layout
+    this script uses when it downloads the genome itself. Only a plausible
+    FASTA counts, so a half-finished download is re-fetched rather than fed
+    to bwa-mem2.
+    """
+    entry = KNOWN_REFERENCES.get(name)
+    if not entry or not reference_dir:
+        return None
+
+    reference_dir = os.path.expanduser(reference_dir)
+    candidates = []
+    if entry.get("subdir") and entry.get("filename"):
+        candidates.append(os.path.join(reference_dir, entry["subdir"],
+                                       entry["filename"]))
+    if entry.get("filename"):
+        candidates.append(os.path.join(reference_dir, entry["filename"]))
+    candidates.append(os.path.join(reference_dir, name, f"{name}.fasta"))
+    candidates.append(os.path.join(reference_dir, f"{name}.fasta"))
+
+    for path in candidates:
+        # 100 MB rules out an error page or an interrupted transfer without
+        # hashing 3 GB on every run.
+        if os.path.isfile(path) and os.path.getsize(path) > 100 * 1024 ** 2:
+            missing = [os.path.basename(i)
+                       for i in reference_index_files(path)
+                       if not os.path.exists(i)]
+            if missing:
+                print(f"[INFO] Shared reference found without all indices "
+                      f"({', '.join(missing)}); they will be built once, "
+                      f"beside it.")
+            return os.path.abspath(path)
+    return None
+
+
+def reference_cache_target(name, reference_dir, output_dir, dry_run=False):
+    """
+    Where a downloaded genome should be written: (directory, fasta path).
+
+    The shared cache, unless it cannot be created or written; the fallback
+    to output_dir/reference is announced, because a silent one would
+    quietly reintroduce the per-run download this exists to stop.
+    """
+    entry = KNOWN_REFERENCES.get(name, {})
+    filename = entry.get("filename") or f"{name}.fasta"
+    if reference_dir:
+        shared = os.path.join(os.path.expanduser(reference_dir),
+                              entry.get("subdir") or name)
+        if dry_run:
+            return shared, os.path.join(shared, filename)
+        try:
+            os.makedirs(shared, exist_ok=True)
+            if os.access(shared, os.W_OK):
+                return shared, os.path.join(shared, filename)
+            print(f"[WARN] Reference cache {shared} is not writable.")
+        except OSError as exc:
+            print(f"[WARN] Cannot use reference cache {shared}: {exc}")
+
+    fallback = os.path.join(output_dir, "reference")
+    print(f"[WARN] Falling back to {fallback}; this copy is not shared, so "
+          f"the next output directory will download and index its own. "
+          f"Set --reference-dir to somewhere writable to avoid that.")
+    if not dry_run:
+        os.makedirs(fallback, exist_ok=True)
+    return fallback, os.path.join(fallback, filename)
+
+
 def ensure_reference(args):
     """
     Verify or download the reference genome FASTA.
@@ -449,47 +538,64 @@ def ensure_reference(args):
 
     # Check if this is a known genome name (not a file path).
     if ref in KNOWN_REFERENCES and not os.path.isfile(ref):
-        ref_dir = os.path.join(args.output_dir, "reference")
-        os.makedirs(ref_dir, exist_ok=True)
-        local_ref = os.path.join(ref_dir, f"{ref}.fasta")
+        entry = KNOWN_REFERENCES[ref]
+        url = entry["url"]
 
-        url = KNOWN_REFERENCES[ref]["url"]
-        needs_download = True
-        if os.path.exists(local_ref):
-            if dry_run or cached_download_is_complete(local_ref, url):
-                print(f"[INFO] Using cached reference: {local_ref}")
-                needs_download = False
-            else:
-                print("[INFO] Re-downloading the reference.")
+        # The shared cache first. An installed genome is already indexed, so
+        # finding it here saves the download AND the 1-2 hour bwa-mem2 index
+        # that would otherwise follow.
+        cached = find_cached_reference(ref, getattr(args, "reference_dir",
+                                                    DEFAULT_REFERENCE_DIR))
+        if cached:
+            print(f"[INFO] Using the shared reference: {cached}")
+            print("[INFO] Nothing to download; indices are reused as found.")
+            ref = cached
+        else:
+            ref_dir, local_ref = reference_cache_target(
+                ref, getattr(args, "reference_dir", DEFAULT_REFERENCE_DIR),
+                args.output_dir, dry_run=dry_run)
 
-        if needs_download:
-            print(f"[INFO] Downloading reference genome '{ref}' ...")
-            if not download_verified(url, local_ref, dry_run=dry_run):
-                sys.exit(1)
+            needs_download = True
+            if os.path.exists(local_ref):
+                if dry_run or cached_download_is_complete(local_ref, url):
+                    print(f"[INFO] Using cached reference: {local_ref}")
+                    needs_download = False
+                else:
+                    print("[INFO] Re-downloading the reference.")
 
-        # Downstream tools need plain-text FASTA. The Broad GCS bucket
-        # serves hg38 uncompressed, so this normally no-ops -- it is kept
-        # because it still rescues a copy cached from the older gzipped
-        # URL, and any future KNOWN_REFERENCES entry that is compressed.
-        # is_gzipped() returns False for a missing file, so after a dry-run
-        # "download" (which wrote nothing) this branch is simply skipped.
-        if is_gzipped(local_ref):
-            if dry_run:
-                print(f"[DRY RUN] Would decompress reference {local_ref}")
-            else:
-                print(f"[INFO] Decompressing reference {local_ref} ...")
-                tmp_path = local_ref + ".tmp"
-                try:
-                    with gzip.open(local_ref, "rb") as src, \
-                            open(tmp_path, "wb") as dst:
-                        shutil.copyfileobj(src, dst, length=8 * 1024 * 1024)
-                    os.replace(tmp_path, local_ref)
-                except OSError as exc:
-                    print(f"[ERROR] Failed to decompress downloaded reference: "
-                          f"{exc}")
+            if needs_download:
+                print(f"[INFO] Downloading reference genome '{ref}' into "
+                      f"{ref_dir} ...")
+                print("[INFO] This is a one-off: later runs reuse it from "
+                      "there, whatever their output directory.")
+                if not download_verified(url, local_ref, dry_run=dry_run):
                     sys.exit(1)
 
-        ref = local_ref
+            ref = local_ref
+
+            # Downstream tools need plain-text FASTA. The Broad GCS bucket
+            # serves hg38 uncompressed, so this normally no-ops -- it is
+            # kept because it still rescues a copy cached from the older
+            # gzipped URL, and any future KNOWN_REFERENCES entry that is
+            # compressed. is_gzipped() returns False for a missing file, so
+            # after a dry-run "download" (which wrote nothing) this branch
+            # is simply skipped.
+            if is_gzipped(ref):
+                if dry_run:
+                    print(f"[DRY RUN] Would decompress reference {ref}")
+                else:
+                    print(f"[INFO] Decompressing reference {ref} ...")
+                    tmp_path = ref + ".tmp"
+                    try:
+                        with gzip.open(ref, "rb") as src, \
+                                open(tmp_path, "wb") as dst:
+                            shutil.copyfileobj(src, dst,
+                                               length=8 * 1024 * 1024)
+                        os.replace(tmp_path, ref)
+                    except OSError as exc:
+                        print(f"[ERROR] Failed to decompress downloaded "
+                              f"reference: {exc}")
+                        sys.exit(1)
 
     # Resolve to absolute path and verify existence.
     ref = os.path.abspath(ref)
@@ -897,6 +1003,14 @@ def build_parser():
     io.add_argument("-r", "--reference", required=True,
                     help="Path to reference genome FASTA, or a known name "
                          "like 'hg38' to download automatically.")
+    io.add_argument("--reference-dir", default=DEFAULT_REFERENCE_DIR,
+                    help="Shared directory holding downloaded genomes and "
+                         "their indices, used when --reference names a "
+                         "genome rather than a FASTA. Kept out of the "
+                         "output directory so every run reuses one copy "
+                         "instead of downloading and indexing its own "
+                         f"(default: {DEFAULT_REFERENCE_DIR}, or "
+                         "$PIPELINE_REFERENCE_DIR).")
     io.add_argument("--manifest", default=None,
                     help="Path to a fastq_qc_clean.py run manifest JSON. "
                          "When provided, tumour/normal sample names and "

@@ -30,6 +30,21 @@ DESIGN CONSTRAINTS THIS ENCODES
   * NOTHING IS KILLED IMPLICITLY. Cancelling terminates the process group
     so GATK's Java children die too, rather than being orphaned to carry
     on consuming the machine.
+  * A RUN IS NOT FINISHED UNTIL EVERYTHING IT COMPRISES IS. The clinical
+    report runs after the pipeline exits, in PCGR's own conda environment,
+    and takes up to an hour more. That phase has its own non-terminal
+    status, "reporting": the page keeps polling, keeps offering Cancel and
+    withholds the report buttons until it ends. Calling the run finished at
+    the pipeline's exit -- which is what this used to do -- meant the UI
+    announced a completed run, and a PDF generated in that window recorded
+    "PCGR did not run" about a PCGR that was running as it was written.
+
+STATUSES
+--------
+  queued -> running -> [reporting ->] finished
+                    +-> failed | cancelled
+  interrupted is assigned on startup to a run whose webapp died under it;
+  the process went with the server, so whatever it was doing is over.
 """
 
 import glob

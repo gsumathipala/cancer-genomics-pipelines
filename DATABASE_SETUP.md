@@ -121,11 +121,13 @@ Sizes are approximate.
 1. **hg38 reference FASTA** — `~/data/references/hg38/Homo_sapiens_assembly38.fasta`
    (3.1 GB) with `.fai`, `.dict` and the five bwa-mem2 index files (16 GB).
    Kept under Broad's original filename so GATK resolves the `.dict` by
-   convention. `--reference hg38` also works now — the dead S3 URL was
-   repointed at Broad's public GCS bucket and the auto-download path was
-   verified end to end on 2026-09-07. Passing this explicit path is still
-   preferable: `--reference hg38` caches a *second* 20 GB copy of the genome
-   and its indices under your output directory.
+   convention. `--reference hg38` also works — the dead S3 URL was repointed
+   at Broad's public GCS bucket and the auto-download path was verified end to
+   end on 2026-09-07 — and it now finds *this* copy: the name is resolved
+   against `--reference-dir` (default `~/data/references`) before any download
+   is considered, so no second copy is made. It used to cache another 20 GB of
+   genome and indices under each output directory, which is why passing the
+   explicit path was previously the advice.
 2. **SnpEff hg38 database** — 448 MB at
    `~/miniconda3/envs/cancer_pipeline/share/snpeff-5.4.0c-0/data/hg38`.
    Not under `~/data`; it lives in SnpEff's own `data.dir`.
@@ -145,6 +147,7 @@ Sizes are approximate.
 | Panel of Normals `1000g_pon.hg38.vcf.gz` (~20 MB) | `--panel-of-normals` | No recurrent-artefact subtraction |
 | PCGR data bundle + Ensembl VEP cache (tens of GB each) | `--pcgr-refdata-dir`, `--vep-dir` | PCGR step skipped with a warning |
 | Panel target BED (from your assay vendor) | `--intervals` | Mutect2 walks the **whole genome** and calls on off-target reads — on a 4.5 Mb panel that was 127,081 PASS calls instead of ~1,400 |
+| The same BED again | `--coverage-bed` | No coverage statement: a region the sequencing never reached and a region that is wild type both appear as no variant, and nothing in the run or the report tells them apart |
 
 dbSNP, Mills and the PoN all come from the Broad public buckets; the `wget`
 commands are in `install.md` §6.
@@ -216,8 +219,16 @@ than every optional database above combined:
 ```bash
     --intervals /path/to/panel_targets.bed \
     --interval-padding 50 \
-    --min-depth 20
+    --min-depth 20 \
+    --coverage-bed /path/to/panel_targets.bed
 ```
+
+The same BED does two different jobs there. `--intervals` restricts where the
+caller looks; `--coverage-bed` asks, afterwards, how much of that target the
+sequencing actually reached at `--min-depth`, and writes a per-sample HTML
+report naming the stretches that fell short. Without the second one a capture
+dropout is indistinguishable from a wild-type region — both are simply absent
+from the VCF.
 
 `--min-allele-fraction` is deliberately **not** shown with a value here. It is
 type-blind, so it buys indel cleanup with SNV sensitivity, and it must come
@@ -252,8 +263,9 @@ form rejects those paths — including the ones it filled in itself:
 python webapp/app.py --allow-root ~/data --allow-root /path/to/fastqs
 ```
 
-Two things it cannot supply: the target BED, which is your assay vendor's
-file and must also be under an `--allow-root` path, and a matched normal.
+Two things it cannot supply: the target BED — your assay vendor's file, which
+must also be under an `--allow-root` path, and which the form asks for twice,
+once to restrict calling and once to check coverage — and a matched normal.
 
 For **several samples**, tick **Batch** and the app runs each as its own
 patient in turn, each with its own output subdirectory and report. It refuses

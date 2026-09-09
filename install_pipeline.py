@@ -917,8 +917,8 @@ def step_verify(args):
     if cosmic:
         LOG.ok(f"COSMIC present ({cosmic[0]})")
     else:
-        LOG.warn("no chr-renamed COSMIC -- step 9 will be skipped. Supply it "
-                 "with --cosmic <file>")
+        LOG.warn("no chr-renamed COSMIC -- step 10 will be skipped. Supply "
+                 "it with --cosmic <file>")
 
     # A dry run of the pipeline itself is the end-to-end check: it builds
     # every command line without touching data or the network.
@@ -931,6 +931,39 @@ def step_verify(args):
         else:
             LOG.fail("the pipeline script failed to start")
             ok = False
+
+    # The pipeline imports these from beside itself, late in a run: PCGR at
+    # step 13 and the coverage check at step 12. A bundle missing one fails
+    # after the hours, not before them.
+    for helper, what in (("pcgr_report.py", "clinical report"),
+                         ("coverage_report.py", "coverage check")):
+        path = os.path.join(args.repo, helper)
+        if not os.path.exists(path):
+            LOG.fail(f"{helper} missing -- the {what} cannot run")
+            ok = False
+            continue
+        code, _ = env_run(PIPELINE_ENV, ["python", path, "--help"],
+                          capture=True, check=False)
+        if code == 0:
+            LOG.ok(f"{helper} runs")
+        else:
+            LOG.fail(f"{helper} failed to start")
+            ok = False
+
+    # The pipeline looks for a named genome under ~/data/references unless
+    # told otherwise. With a moved --data-dir it would not find the one just
+    # installed, and would download a second copy instead.
+    default_ref_dir = os.path.expanduser("~/data/references")
+    installed_ref_dir = os.path.join(args.data_dir, "references")
+    if os.path.abspath(installed_ref_dir) != os.path.abspath(default_ref_dir):
+        LOG.warn(
+            f"the genome is in {installed_ref_dir}, but the pipeline looks in "
+            f"{default_ref_dir} by default. Export "
+            f"PIPELINE_REFERENCE_DIR={installed_ref_dir} (or pass "
+            f"--reference-dir) so '--reference hg38' finds this copy instead "
+            f"of downloading and indexing another.")
+    else:
+        LOG.ok("the pipeline will find this genome by name (--reference hg38)")
     return ok
 
 
@@ -1051,6 +1084,10 @@ def main():
     if not args.dry_run and (args.only is None or "verify" in (args.only or [])):
         print("\nNext:")
         print(f"  conda activate {PIPELINE_ENV}")
+        if os.path.abspath(args.data_dir) != os.path.expanduser("~/data"):
+            print(f"  export PIPELINE_REFERENCE_DIR="
+                  f"{os.path.join(args.data_dir, 'references')}"
+                  f"   # or the pipeline looks in ~/data/references")
         print(f"  python {os.path.join(args.repo, 'webapp', 'app.py')} "
               f"--allow-root {args.data_dir} --allow-root /path/to/fastqs")
     return 0

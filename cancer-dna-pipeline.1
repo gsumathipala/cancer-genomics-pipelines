@@ -11,6 +11,7 @@ cancer\-dna\-pipeline \- somatic variant calling for Illumina NextSeq 1000 cance
 .BR comprehensive_variant_calling.py ,
 .BR pipeline_orchestrator.py ,
 .BR pcgr_report.py ,
+.BR coverage_report.py ,
 .B check_db_updates.py
 .
 .SH SYNOPSIS
@@ -50,6 +51,13 @@ cancer\-dna\-pipeline \- somatic variant calling for Illumina NextSeq 1000 cance
 .BI \-\-output\-dir " DIR"
 .BI \-\-sample\-id " ID"
 .BI \-\-pcgr\-refdata\-dir " DIR"
+.RI [ options ]
+.PP
+.B coverage_report.py
+.BI \-\-bam " BAM"
+.BI \-\-bed " BED"
+.BI \-\-sample\-id " ID"
+.BI \-\-output\-dir " DIR"
 .RI [ options ]
 .
 .SH DESCRIPTION
@@ -99,6 +107,16 @@ and COSMIC mutational-signature fitting are computed only when the matching
 .BI \-\-pcgr\-estimate\- *
 flag is given; PCGR leaves all three off by default and does not warn, so the
 report simply lacks those sections.
+.TP
+.B coverage_report.py
+Optional check, invoked as step 12 of
+.B comprehensive_variant_calling.py
+or run standalone. Measures a BED target against the aligned reads and reports
+which regions reached the depth a call must clear, naming the stretches that
+did not.
+.B It exists because a VCF cannot say "not sequenced":
+an unsequenced region and a wild\-type one both yield no variant, so without
+this a capture dropout reaches the clinical report as a negative result.
 .
 .SS Input modes
 The alignment and variant\-calling tools accept sample input three ways, in
@@ -363,7 +381,8 @@ above except
 (it runs no FastQC and has no output\-reuse detection), and every
 .BR \-\-tumour\-* / \-\-normal\-* ,
 .BR \-\-manifest ,
-.BR \-i ", " \-o ", " \-r ", " \-\-two\-pass ", " \-\-threads ", " \-\-dry\-run
+.BR \-i ", " \-o ", " \-r ", " \-\-reference\-dir ", " \-\-two\-pass ", "
+.BR \-\-threads ", " \-\-dry\-run
 option listed for
 .BR align_reads.py .
 Options unique to it:
@@ -724,6 +743,50 @@ PCGR ran and failed,
 PCGR was skipped (not installed, or bundle missing), so a caller can tell the
 two apart.
 .
+.SS coverage_report.py \(em target coverage (standalone)
+Runs the same check outside the pipeline, over any BAM.
+.TP
+.BI \-\-bam " FILE"
+Analysis\-ready alignments (post\-BQSR, or whatever the calls were made from).
+Required.
+.TP
+.BI \-\-bed " FILE"
+Target regions to check. Required.
+.TP
+.BI \-\-sample\-id " ID"
+Sample name, used for the output filenames. Required.
+.TP
+.BI \-\-output\-dir " DIR"
+Directory for
+.IR <sample>.coverage.html ", " .json " and " .tsv .
+Required.
+.TP
+.BI \-\-min\-depth " INT"
+Depth a base must reach to count as covered. Default: 10. Set it to the
+pipeline's
+.B \-\-min\-depth
+so "covered" means "deep enough that a call there would have survived
+filtering".
+.TP
+.BI \-\-min\-mapq " INT"
+.TQ
+.BI \-\-min\-baseq " INT"
+Read and base quality floors, matching what the caller counts. Default: 20
+each.
+.TP
+.B \-\-dry\-run
+Print the
+.BR samtools (1)
+command without running it.
+.PP
+Exit status is
+.B 0
+when a report was written and
+.B 1
+when it could not be \(em no samtools, no BAM, an unreadable BED. The pipeline
+treats the latter as a warning: the calls are already on disk, and a missing
+coverage statement is a caveat on them, not a reason to discard them.
+.
 .SS pipeline_orchestrator.py \(em stage chaining
 .TP
 .BI \-\-stage1\-args " ARGS"
@@ -778,7 +841,7 @@ Where the orchestrator writes its JSON report. Default:
 .
 .SH PIPELINE STAGES
 .B comprehensive_variant_calling.py
-runs thirteen steps. The names accepted by
+runs fourteen steps. The names accepted by
 .B \-\-skip\-steps
 fall into two groups, which behave differently when skipped.
 .PP
@@ -836,6 +899,12 @@ Do not annotate against COSMIC.
 .B annotate
 Do not run SnpEff.
 .TP
+.B coverage
+Do not check the target BED for coverage. Off anyway unless
+.B \-\-coverage\-bed
+is supplied. Skipping it costs the run its only means of telling an
+unsequenced region from a wild\-type one.
+.TP
 .B pcgr
 Do not build the PCGR clinical report. This step is off by default anyway
 unless
@@ -846,7 +915,7 @@ is supplied.
 Failure of
 .BR qc ", " align ", " dedup ", " bqsr ", " mutect2 " or " filter
 is fatal, since each produces an artefact the rest of the run needs.
-.BR contamination ", " msi ", " cosmic ", " annotate " and " pcgr
+.BR contamination ", " msi ", " cosmic ", " annotate ", " coverage " and " pcgr
 are enrichment only: they warn and the run continues.
 .
 .SS check_db_updates.py \(em database release notifier

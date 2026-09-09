@@ -16,14 +16,15 @@ package-manager conflicts.
 | fastp      | fastq_qc_clean.py, comprehensive_variant_calling.py | QC, adapter/poly-G trimming | `fastp` |
 | FastQC     | fastq_qc_clean.py, align_reads.py | Quality reports (raw, cleaned, BAM)    | `fastqc` |
 | bwa-mem2   | align_reads.py, comprehensive_variant_calling.py | Read alignment to reference | `bwa-mem2` |
-| samtools   | align_reads.py, comprehensive_variant_calling.py | BAM sort/index/stats          | `samtools` |
+| samtools   | align_reads.py, comprehensive_variant_calling.py, coverage_report.py | BAM sort/index/stats; per-base depth for the coverage check | `samtools` |
 | GATK (4.x) | comprehensive_variant_calling.py | MarkDuplicatesSpark, BQSR, Mutect2, FilterMutectCalls | `gatk4` |
 | bcftools   | comprehensive_variant_calling.py | COSMIC annotation, overlap counts, stats | `bcftools` |
 | SnpEff     | comprehensive_variant_calling.py | Gene/consequence annotation      | `snpeff` |
 | PCGR       | (optional) pcgr_report.py, comprehensive_variant_calling.py step 13 | Clinical report: actionability tiers; TMB / MSI / signatures only if the matching `--pcgr-estimate-*` flag is passed | `pcgr` |
+| coverage_report.py | (optional) comprehensive_variant_calling.py step 12 | Which target regions the sequencing actually reached, so an absent variant can be told from an unsequenced one; needs only samtools | in this bundle |
 | multiqc    | (optional, suggested by fastq_qc_clean.py) | Aggregate reports          | `multiqc` |
 | Flask      | (optional) webapp/ only            | Web interface                       | `flask` (pip or conda) |
-| wget/curl  | system (reference auto-download)   | Download hg38 reference from Broad | system package |
+| wget/curl  | system (reference auto-download)   | Download hg38 reference from Broad, once, into the shared `--reference-dir` | system package |
 
 PCGR is optional and deliberately left out of the main environment below: it
 pulls a large dependency set and additionally needs two data downloads that
@@ -247,12 +248,16 @@ wget -q -O hg38.dict   $BROAD/Homo_sapiens_assembly38.dict
 > by stripping the FASTA extension and appending `.dict`, so if you rename the
 > FASTA to `hg38.fa` you must also rename the dictionary to `hg38.dict`.
 
-> Where it ends up: with `--reference hg38` the scripts download to
-> `{output_dir}/reference/hg38.fasta` — a directory inside *that run's* output
-> folder, so a new `-o` downloads hg38 again. Put the reference in one shared
-> location and pass `--reference /data/references/hg38/hg38.fa` instead (see
-> §6 for the suggested layout). Reference indexes (`.fai`, `.dict`,
-> `.bwt.2bit.64`, ...) are generated beside it and must stay there.
+> Where it ends up: `--reference hg38` is resolved against `--reference-dir`
+> (default `~/data/references`, or `$PIPELINE_REFERENCE_DIR`) — the layout
+> this installer writes — and an installed genome found there is used as it
+> stands, with no download and no re-indexing. Only a genome missing from
+> there is fetched, into that same shared directory. It used to land in
+> `{output_dir}/reference/`, inside *that run's* output folder, so every new
+> `-o` bought another 3 GB download and another 1–2 hour bwa-mem2 index; that
+> now happens only if the shared directory cannot be written, and the run says
+> so when it falls back. Reference indexes (`.fai`, `.dict`, `.bwt.2bit.64`,
+> ...) are generated beside the FASTA and must stay there.
 
 ## 6. Databases (VCF resources)
 
@@ -336,8 +341,10 @@ PATH automatically. For a manual install (snpEff zip, Homebrew, apt), the
 tool's `bin/` must be added to PATH in `~/.bashrc`. Verify with `which gatk
 bcftools snpEff bwa-mem2 samtools fastp fastqc`.
 
-**Reference genome.** Auto-download lands in `{output_dir}/reference/` (see §5
-warning). Recommended shared layout, indexed files must stay beside the FASTA:
+**Reference genome.** Auto-download lands in the shared `--reference-dir`
+(see §5), not in the run's output directory. Recommended layout — which is
+what `install_pipeline.py` creates, and what `--reference hg38` looks for —
+indexed files must stay beside the FASTA:
 
 ```text
 /data/references/hg38/hg38.fa                       # decompressed FASTA
@@ -437,6 +444,7 @@ python align_reads.py --help >/dev/null && echo "align_reads OK"
 python comprehensive_variant_calling.py --help >/dev/null && echo "comprehensive OK"
 python pipeline_orchestrator.py --help >/dev/null && echo "orchestrator OK"
 python pcgr_report.py --help >/dev/null && echo "pcgr_report OK"
+python coverage_report.py --help >/dev/null && echo "coverage_report OK"
 ```
 
 A dry run exercises the real command construction without touching your data,
@@ -452,8 +460,8 @@ python comprehensive_variant_calling.py \
 
 ## 7a. Manual page (optional)
 
-The four pipeline scripts and `pcgr_report.py` are documented in one section-1
-man page:
+The four pipeline scripts, `pcgr_report.py` and `coverage_report.py` are
+documented in one section-1 man page:
 
 ```bash
 # Read it in place
@@ -664,6 +672,14 @@ release-notes link.
   release notes for the bundle that pairs with your version. PCGR is optional
   throughout: if it or its bundle is missing, step 13 is skipped with a
   warning and the rest of the run is unaffected.
+- **A clean report is not a negative result.** Nothing in a VCF says "this
+  region was never sequenced": a capture dropout and a wild-type exon both
+  produce no variant, and PCGR reports both as silence. Pass your panel BED as
+  `--coverage-bed` and step 12 writes a per-sample HTML report naming every
+  region that missed the depth threshold, with the exact stretches a variant
+  could have hidden in. Without it the run says so and continues; the
+  difference is that you no longer have any way to tell the two silences
+  apart.
 - **PCGR reports a suspiciously high TMB**: PCGR filters on depth/allele
   fraction taken from *INFO* tags, but Mutect2 writes those as per-sample
   *FORMAT* fields, so by default there is nothing to filter on. Pass
@@ -780,6 +796,6 @@ python /path/to/comprehensive_variant_calling.py \
     --tumour-r2 fq/S_R2_001.fastq.gz --dry-run
 ```
 
-A successful dry run prints all **13** step banners and creates no BAMs or
+A successful dry run prints all **14** step banners and creates no BAMs or
 VCFs. Add `java -version` to the loop above: it is the check that catches an
 environment `gatk --version` will happily pass (see §7).
