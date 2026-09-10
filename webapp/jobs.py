@@ -116,6 +116,10 @@ class Job:
             return {
                 "id": self.id,
                 "status": self.status,
+                # The report phase has no step number of its own: the
+                # pipeline's count is what the log shows, and the UI shows
+                # the bar working rather than a step that does not exist.
+                "indeterminate": self.status == "reporting",
                 "returncode": self.returncode,
                 "step": self.step,
                 "total_steps": self.total_steps,
@@ -186,12 +190,6 @@ class Job:
                     if self.pcgr_form:
                         self.status = "reporting"
                         self.step = self.total_steps or self.step
-                        # The report is a step of this run even though the
-                        # pipeline never counted it, so the bar has
-                        # somewhere left to go instead of sitting at 100%
-                        # for the hour PCGR takes.
-                        if self.total_steps:
-                            self.total_steps += 1
                         self.step_name = "Clinical report (PCGR)"
                     else:
                         self.status = "finished"
@@ -701,6 +699,14 @@ def build_pcgr_argv(python_exe, script_dir, manifest, form, output_dir):
     vcf = manifest.get("cosmic_vcf") or manifest.get("filtered_vcf")
     if not vcf or not os.path.exists(vcf):
         return None, f"no filtered VCF on disk to report on ({vcf})"
+
+    # PCGR rejects an input VCF with no VEP cache. The form refuses this
+    # combination at submit time; this catches a job restored from an older
+    # record, or one submitted straight to the API, and turns an hour-late
+    # failure into a skip that names its cause.
+    if not form.get("vep_dir"):
+        return None, ("no VEP cache configured, and PCGR will not annotate a "
+                      "VCF without one")
 
     argv = [
         python_exe, os.path.join(script_dir, "pcgr_report.py"),

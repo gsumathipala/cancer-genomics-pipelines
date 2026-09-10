@@ -76,7 +76,8 @@
     <span class="status {{ job.status }}" id="status">{{ job.status }}</span>
     <span id="stepname" class="small">{{ job.step_name }}</span>
   </div>
-  <div class="bar big"><span id="bar" style="width: {{ job.percent }}%"></span></div>
+  <div class="bar big{% if job.indeterminate %} indeterminate{% endif %}"
+       id="barwrap"><span id="bar" style="width: {{ job.percent }}%"></span></div>
   <p class="small"><span id="steptext">{{ job.step }}/{{ job.total_steps or '?' }}</span> steps</p>
   <p class="small" id="pcgrnote">
     {%- if job.status == 'reporting' %}The pipeline has finished; PCGR is
@@ -155,6 +156,8 @@ async function poll() {
     document.getElementById('status').className = 'status ' + j.status;
     document.getElementById('stepname').textContent = j.step_name || '';
     document.getElementById('bar').style.width = j.percent + '%';
+    document.getElementById('barwrap').classList.toggle(
+      'indeterminate', !!j.indeterminate);
     document.getElementById('steptext').textContent =
       j.step + '/' + (j.total_steps || '?');
 

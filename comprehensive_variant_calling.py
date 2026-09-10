@@ -3702,6 +3702,17 @@ def validate_args(args, parser):
     if args.umi_skip is not None and not args.umi_loc:
         parser.error("--umi-skip given without --umi-loc.")
 
+    # A PCGR bundle with no VEP cache produces a run that completes and then
+    # cannot report: PCGR requires --vep_dir whenever it is handed an input
+    # VCF, and it only says so once step 13 starts -- hours in. Refuse the
+    # combination here, where it costs nothing.
+    if args.pcgr_refdata_dir and not args.vep_dir:
+        parser.error("--pcgr-refdata-dir needs --vep-dir: PCGR annotates "
+                     "with Ensembl VEP and refuses an input VCF without a "
+                     "cache, so the report would fail after the run. The "
+                     "installer puts one in ~/data/vep_cache. Omit "
+                     "--pcgr-refdata-dir to run without a clinical report.")
+
     # Manifest and auto-discover are mutually exclusive input modes.
     if args.manifest and args.auto_discover:
         parser.error("--manifest and --auto-discover are mutually exclusive. "
@@ -4039,6 +4050,21 @@ def main():
                 json_path = os.path.join(dirs["reports"], f"{name}.fastp.json")
                 if os.path.exists(json_path):
                     manifest[f"fastp_{name}"] = summarise_fastp_json(json_path)
+                    # A file that is not FASTQ, an empty one, or a mismatched
+                    # pair leaves fastp exiting 0 with nothing to show for
+                    # it. Every later step then "succeeds" over no data and
+                    # the run reports success with an empty VCF -- a result
+                    # indistinguishable from a genuine absence of variants.
+                    # Nothing downstream can recover from this, so stop.
+                    kept = manifest[f"fastp_{name}"].get("reads_after")
+                    if kept == 0 and not args.dry_run:
+                        print(f"[FATAL] {name}: fastp kept 0 reads. Nothing "
+                              f"downstream can be computed from an empty "
+                              f"read set, and a run that continued would "
+                              f"report success with an empty VCF.")
+                        print(f"        Check the input files are real, "
+                              f"paired FASTQ: {tumour['r1'] if name == tumour['name'] else (normal or {}).get('r1')}")
+                        sys.exit(1)
     elif "qc" in resumed_steps:
         # Resumed: the cleaned FASTQs this step would have written are
         # already on disk, so keep pointing at THEM (the dirs["cleaned"]
@@ -4105,6 +4131,23 @@ def main():
                     dry_run=args.dry_run,
                 )
                 manifest[f"alignment_stats_{name}"] = alignment_stats
+                # The same trap as an empty QC result, one step later and
+                # reachable even when QC was skipped or a manifest supplied
+                # the reads: nothing aligned means every later step runs
+                # over an empty BAM and the run reports success with an
+                # empty VCF. flagstat has already been parsed, so this
+                # costs nothing.
+                mapped = alignment_stats.get("mapped_reads")
+                if not args.dry_run and mapped is not None and \
+                        str(mapped).strip() in ("0", "0.0"):
+                    print(f"[FATAL] {name}: 0 reads aligned to the "
+                          f"reference. Every later step would run over an "
+                          f"empty BAM and the run would report success with "
+                          f"an empty VCF.")
+                    print("        Check that the reads and the reference "
+                          "belong together (species, build and contig "
+                          "naming), and that the input really is FASTQ.")
+                    sys.exit(1)
     else:
         print(f"[SKIP] Alignment skipped; expecting an existing BAM at "
               f"{tumour_bam}")

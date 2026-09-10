@@ -118,6 +118,20 @@ dl.kv dd { margin: 0; word-break: break-word; }
 .bar { background: #eef1f5; border-radius: 999px; height: 6px;
        overflow: hidden; min-width: 90px; }
 .bar.big { height: 9px; margin: 10px 0 4px; }
+/* The clinical report has no step number of its own -- the pipeline's
+   count is what the log shows -- so a run in the report phase shows a
+   moving bar rather than a full one or an invented step. */
+.bar.indeterminate span {
+  background: linear-gradient(90deg, var(--accent) 0 40%,
+                              #cfe0ff 40% 100%);
+  background-size: 250% 100%;
+  animation: sweep 1.6s linear infinite;
+}
+@keyframes sweep { from { background-position: 100% 0; }
+                   to   { background-position: -150% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .bar.indeterminate span { animation: none; }
+}
 .bar span { display: block; height: 100%; background: var(--accent);
             transition: width .4s ease; }
 .progress-cell { display: flex; align-items: center; gap: 8px; }

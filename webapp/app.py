@@ -372,11 +372,41 @@ def submit():
                                               must_exist=True)
         except ValueError as exc:
             errors.append(f"Input directory: {exc}")
-        if not form.get("auto_discover"):
+        # Batch and "these two are a pair" both describe what to do with the
+        # samples auto-discover finds, so neither means anything without it.
+        # Ticked alone they used to fall through to the explicit-sample
+        # checks below, which complained that "tumour sample is required" --
+        # three errors naming neither box.
+        needs_discovery = [
+            label for key, label in
+            (("batch_mode", "Batch"),
+             ("second_is_matched_normal",
+              "'The two samples are a tumour/normal pair from one person'"))
+            if form.get(key)]
+        if needs_discovery and not form.get("auto_discover"):
+            errors.append(
+                f"{' and '.join(needs_discovery)} decides what to do with the "
+                f"samples found in the input directory, so it needs "
+                f"'Auto-discover FASTQ pairs' ticked as well. Tick that, or "
+                f"untick it and name the tumour (and normal) files "
+                f"explicitly.")
+        elif not form.get("auto_discover"):
             for field in ("tumour_sample", "tumour_r1", "tumour_r2"):
                 if not form.get(field):
                     errors.append(f"{field.replace('_', ' ')} is required "
                                   f"unless auto-discover or a manifest is used")
+            # The FASTQ fields are paths like any other, and were the one
+            # set that skipped safe_path(): a value outside --allow-root was
+            # forwarded to the pipeline, and a typo was only discovered when
+            # the run failed minutes later. Both are caught here now.
+            for field in ("tumour_r1", "tumour_r2",
+                          "normal_r1", "normal_r2"):
+                if form.get(field):
+                    try:
+                        resolved[field] = safe_path(form[field],
+                                                    must_exist=True)
+                    except ValueError as exc:
+                        errors.append(f"{field.replace('_', ' ')}: {exc}")
             if form.get("normal_sample") and not (form.get("normal_r1")
                                                   and form.get("normal_r2")):
                 errors.append("A normal sample needs both normal R1 and R2")
@@ -390,6 +420,18 @@ def submit():
                 resolved[optional] = safe_path(form[optional], must_exist=True)
             except ValueError as exc:
                 errors.append(f"{optional.replace('_', ' ')}: {exc}")
+
+    # A bundle without a cache is a run that completes and then cannot
+    # report. PCGR requires --vep_dir whenever it is given an input VCF, and
+    # it says so only once it starts -- which is after the pipeline has spent
+    # its hours. Catch it here, where it costs nothing.
+    if form.get("pcgr_refdata_dir") and not form.get("vep_dir"):
+        errors.append(
+            "A PCGR reference bundle was given without a VEP cache. PCGR "
+            "annotates with Ensembl VEP and refuses to start without one, so "
+            "the run would finish and then fail to produce a report. Fill in "
+            "the VEP cache (the installer puts it in ~/data/vep_cache), or "
+            "clear the bundle to run without a clinical report.")
 
     # Validate the site code rather than forwarding whatever was posted:
     # PCGR rejects an out-of-range value, and it does so after the pipeline

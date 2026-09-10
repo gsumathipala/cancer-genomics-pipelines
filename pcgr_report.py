@@ -761,6 +761,20 @@ def run_pcgr(input_vcf, output_dir, sample_id, refdata_dir, vep_dir=None,
               f"skipping PCGR report.")
         return None
 
+    # PCGR 2.x refuses --input_vcf without --vep_dir, and it refuses it
+    # AFTER the caller has spent its hours getting here. Say so up front,
+    # in terms of this script's own option rather than PCGR's.
+    if not vep_dir:
+        print("[WARN] No VEP cache given (--vep-dir); skipping PCGR report.")
+        print("       PCGR annotates with Ensembl VEP and rejects an input "
+              "VCF without a cache;")
+        print("       the installer puts one in ~/data/vep_cache.")
+        return None
+
+    if not dry_run and not os.path.isdir(vep_dir):
+        print(f"[WARN] VEP cache not found: {vep_dir}; skipping PCGR report.")
+        return None
+
     if not dry_run and not os.path.exists(input_vcf):
         print(f"[WARN] Input VCF not found: {input_vcf}; "
               f"skipping PCGR report.")
