@@ -24,7 +24,8 @@ WHAT IT INSTALLS
   6. PCGR reference bundle + Ensembl VEP cache
   7. MSIsensor2 models for tumour-only MSI scoring
   8. COSMIC, if you supply the file (see COSMIC below)
-  9. the man page
+  9. the pipeline scripts themselves, into the installation directory
+ 10. the man page
 
 THE TRAPS THIS ENCODES
 ----------------------
@@ -67,6 +68,33 @@ USAGE
   Re-running is safe: every step checks first and skips what is already
   present and complete. An interrupted run is resumed by running it again.
 
+UPDATING AN EXISTING INSTALLATION
+---------------------------------
+  Copy a newer bundle to the machine and run it from there:
+
+    python3 /path/to/new_bundle/install_pipeline.py --update
+
+  That refreshes the SCRIPTS of the installation this machine already has,
+  plus the man page, then verifies. It downloads nothing and touches no
+  conda environment, so it takes seconds rather than the original two
+  hours -- the databases and environments are already there and are not
+  what changed.
+
+  It finds the installation from a record written under --data-dir at
+  install time. The first time you update an installation that predates
+  that record, say where it is:
+
+    python3 install_pipeline.py --update --code-dir ~/DNA_pipeline_installer
+
+  and it is remembered from then on. --check reports whether the installed
+  code matches the bundle you are holding, without changing anything.
+
+  Whatever is replaced is copied to .bundle-backup-<timestamp>/ inside the
+  installation first. A file that changed since it was installed is named
+  individually as it is replaced; --keep-local leaves those alone instead.
+  Nothing is ever deleted: a file the installation has and this bundle does
+  not is reported and left where it is.
+
 COSMIC
 ------
   COSMIC cannot be downloaded unattended -- it needs a registered account at
@@ -81,6 +109,7 @@ REQUIREMENTS
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -88,6 +117,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 
 # =============================================================================
 # WHAT GETS INSTALLED
@@ -816,6 +846,291 @@ def step_cosmic(args):
     return True
 
 
+# =============================================================================
+# THE CODE ITSELF
+# =============================================================================
+# Everything above installs what the pipeline DEPENDS on. This installs the
+# pipeline: the scripts in this bundle, into the directory the installation
+# actually runs from.
+#
+# The case it exists for: a machine was set up months ago, the bundle has
+# moved on, and someone arrives with a newer copy. Before this, updating
+# meant remembering which directory the old one lived in and copying files
+# over it by hand -- with no record of what changed, no backup, and nothing
+# to stop a local fix being silently overwritten.
+#
+# WHAT IT WILL NOT DO
+#   * It never deletes a file the target has and this bundle does not. That
+#     file might be a local script, or the leftovers of a version that knew
+#     something this one does not. It is reported, not removed.
+#   * It never replaces anything without keeping a copy. Whatever it
+#     overwrites goes to .bundle-backup-<timestamp>/ inside the target,
+#     mirroring the layout, so an update can be undone by hand.
+#   * A file that differs from BOTH this bundle and what was last installed
+#     changed outside this installer -- someone edited it, or an older copy
+#     was dropped over the top. Those two are indistinguishable from here,
+#     so each one is named as it is replaced rather than passed over in
+#     silence. --keep-local leaves them alone instead, for a machine
+#     carrying deliberate local edits.
+
+INSTALL_RECORD = "pipeline_install.json"
+
+# Never copied: caches, version control, editor droppings, and the backup
+# directories this step writes itself.
+CODE_SKIP_DIRS = {"__pycache__", ".git", ".idea", ".vscode", ".mypy_cache",
+                  ".pytest_cache", "webapp_runs"}
+
+
+def _sha256(path):
+    """Content hash of one file, or None if it cannot be read."""
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def bundle_files(repo):
+    """
+    Every file this bundle ships, as {relative path: hash on disk}.
+
+    SHA256SUMS supplies the LIST -- it is the bundle's own statement of
+    what it consists of -- but the hashes are recomputed from disk, because
+    what should be copied is the code as it actually is right now, not as
+    it was when the manifest was written.
+    """
+    repo = os.path.abspath(repo)
+    listed = []
+    manifest = os.path.join(repo, "SHA256SUMS")
+    if os.path.exists(manifest):
+        try:
+            with open(manifest, encoding="utf-8") as fh:
+                for line in fh:
+                    _hash, _sep, rel = line.strip().partition("  ")
+                    rel = rel.strip()
+                    if rel and os.path.isfile(os.path.join(repo, rel)):
+                        listed.append(rel)
+        except OSError:
+            listed = []
+        # The manifest cannot list itself, but it is part of the bundle:
+        # without this the updated installation keeps the old one and then
+        # fails the `sha256sum -c SHA256SUMS` the README recommends.
+        if listed:
+            listed.append("SHA256SUMS")
+    if not listed:
+        # No manifest (or an unreadable one): walk instead, so this still
+        # works on a bundle that was assembled by hand.
+        for root, dirs, files in os.walk(repo):
+            dirs[:] = [d for d in dirs
+                       if d not in CODE_SKIP_DIRS
+                       and not d.startswith(".bundle-backup-")]
+            for name in files:
+                if name.endswith((".pyc", ".pyo", ".swp")) or \
+                        name == INSTALL_RECORD:
+                    continue
+                listed.append(os.path.relpath(os.path.join(root, name), repo))
+    return {rel: _sha256(os.path.join(repo, rel)) for rel in sorted(listed)}
+
+
+def record_path(data_dir):
+    return os.path.join(data_dir, INSTALL_RECORD)
+
+
+def read_install_record(data_dir):
+    """What the last install or update wrote, or {}."""
+    try:
+        with open(record_path(data_dir), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def write_install_record(data_dir, code_dir, files):
+    """
+    Remember where the code lives and what was put there.
+
+    The file hashes are the point: without them an update cannot tell a
+    file this installer wrote last time from one somebody edited since,
+    and would have to either refuse every difference or overwrite it.
+    """
+    record = read_install_record(data_dir)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    record.update({
+        "code_dir": os.path.abspath(code_dir),
+        "updated_utc": now,
+        "files": files,
+    })
+    record.setdefault("installed_utc", now)
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        tmp = record_path(data_dir) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(record, fh, indent=2, sort_keys=True)
+        os.replace(tmp, record_path(data_dir))
+    except OSError as exc:
+        LOG.warn(f"could not write the install record: {exc}")
+    return record
+
+
+def resolve_code_dir(args):
+    """
+    Where the installation's code lives: the flag, the record, or here.
+
+    Returns (path, source) so the caller can say which of the three it is
+    -- "here" being the case where this bundle IS the installation, which
+    is what a first install looks like.
+    """
+    if getattr(args, "code_dir", None):
+        return os.path.abspath(os.path.expanduser(args.code_dir)), "--code-dir"
+    recorded = read_install_record(args.data_dir).get("code_dir")
+    if recorded:
+        return os.path.abspath(recorded), "the install record"
+    return os.path.abspath(args.repo), "this bundle"
+
+
+def classify_code(repo_files, target, recorded):
+    """
+    Compare this bundle against an installation, file by file.
+
+    Returns (new, changed, diverged, unchanged, extra). "diverged" means
+    the installed file differs from this bundle AND from what was last
+    installed there, so something outside this installer changed it: an
+    edit in place, or an older copy dropped over the top. Nothing here can
+    tell those apart, which is why they are named individually rather than
+    folded into the count of ordinary updates.
+    """
+    new, changed, diverged, unchanged = [], [], [], []
+    for rel, want in repo_files.items():
+        dest = os.path.join(target, rel)
+        if not os.path.exists(dest):
+            new.append(rel)
+            continue
+        have = _sha256(dest)
+        if have == want:
+            unchanged.append(rel)
+        elif recorded.get(rel) and have != recorded.get(rel):
+            diverged.append(rel)
+        else:
+            changed.append(rel)
+
+    extra = []
+    for root, dirs, files in os.walk(target):
+        dirs[:] = [d for d in dirs
+                   if d not in CODE_SKIP_DIRS
+                   and not d.startswith(".bundle-backup-")]
+        for name in files:
+            rel = os.path.relpath(os.path.join(root, name), target)
+            if rel not in repo_files and not name.endswith((".pyc", ".pyo")) \
+                    and rel != INSTALL_RECORD:
+                extra.append(rel)
+    return new, changed, diverged, unchanged, sorted(extra)
+
+
+def step_code(args):
+    """Install or update the pipeline scripts in the installation directory."""
+    repo = os.path.abspath(args.repo)
+    target, source = resolve_code_dir(args)
+    record = read_install_record(args.data_dir)
+    repo_files = bundle_files(repo)
+
+    if not repo_files:
+        LOG.fail(f"no files found to install from {repo}")
+        return False
+
+    if os.path.abspath(target) == repo:
+        # Running from the installation itself: there is nothing to copy,
+        # but the record still has to exist, or a later update from another
+        # copy would not know where this one lives.
+        LOG.skip(f"this bundle is the installation ({repo})")
+        if not args.dry_run:
+            write_install_record(args.data_dir, repo, repo_files)
+            LOG.ok(f"recorded it in {record_path(args.data_dir)}")
+        return True
+
+    verb = "updating" if os.path.isdir(target) else "installing"
+    LOG.info(f"{verb} the installation at {target}")
+    LOG.info(f"  (found via {source}; {len(repo_files)} files in this bundle)")
+
+    if not os.path.isdir(target):
+        if args.dry_run:
+            LOG.info(f"(dry run) would create {target} and install "
+                     f"{len(repo_files)} files")
+            return True
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError as exc:
+            LOG.fail(f"cannot create {target}: {exc}")
+            return False
+
+    new, changed, diverged, unchanged, extra = classify_code(
+        repo_files, target, record.get("files") or {})
+
+    LOG.info(f"  {len(unchanged)} already current, {len(changed)} to update, "
+             f"{len(new)} to add, {len(diverged)} changed outside this "
+             f"installer, {len(extra)} not in this bundle")
+
+    # Bringing the installation in line with this bundle is the whole
+    # point, so a file that drifted is replaced like any other -- with its
+    # old content kept, and named in the output so nobody discovers it
+    # later. --keep-local is for the machine that carries deliberate edits.
+    to_copy = new + changed + ([] if args.keep_local else diverged)
+    if not to_copy:
+        LOG.skip("the installed code already matches this bundle")
+    elif args.dry_run:
+        for rel in to_copy:
+            LOG.info(f"(dry run) would write {rel}")
+    else:
+        stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        backup = os.path.join(target, f".bundle-backup-{stamp}")
+        backed_up = 0
+        for rel in to_copy:
+            src, dest = os.path.join(repo, rel), os.path.join(target, rel)
+            try:
+                if os.path.exists(dest):
+                    keep = os.path.join(backup, rel)
+                    os.makedirs(os.path.dirname(keep), exist_ok=True)
+                    shutil.copy2(dest, keep)
+                    backed_up += 1
+                os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+                shutil.copy2(src, dest)
+            except OSError as exc:
+                LOG.fail(f"could not install {rel}: {exc}")
+                return False
+        LOG.ok(f"installed {len(to_copy)} file(s)"
+               + (f"; replaced {backed_up} kept in {backup}" if backed_up
+                  else ""))
+
+    for rel in diverged:
+        if args.keep_local:
+            LOG.warn(f"left alone, changed since it was installed: {rel}")
+        else:
+            LOG.warn(f"replaced, and it had changed since it was installed: "
+                     f"{rel}")
+    if diverged:
+        LOG.info("  those differed from BOTH this bundle and the record of "
+                 "what was installed here, which means an edit in place or "
+                 "an older copy dropped over the top -- indistinguishable "
+                 "from here. "
+                 + ("Their previous content is in the backup directory "
+                    "above." if not args.keep_local else
+                    "Drop --keep-local to replace them."))
+    for rel in extra:
+        LOG.info(f"  present but not in this bundle, left alone: {rel}")
+
+    if not args.dry_run:
+        # Record what is actually on disk now, conflicts included, so the
+        # next update classifies from the truth rather than from intent.
+        write_install_record(
+            args.data_dir, target,
+            {rel: _sha256(os.path.join(target, rel)) for rel in repo_files})
+        LOG.info("restart the web interface to pick up the new code; a run "
+                 "already in progress keeps using the code it started with.")
+    return True
+
+
 def step_manpage(args):
     """The man page, into the user's own man path."""
     src = os.path.join(args.repo, "cancer-dna-pipeline.1")
@@ -969,6 +1284,34 @@ def step_verify(args):
             LOG.fail(f"{helper} failed to start")
             ok = False
 
+    # Is the installed code this bundle's code? --check is where someone
+    # asks "is this machine current?", and until now that question was only
+    # ever answered about the databases.
+    target, source = resolve_code_dir(args)
+    repo_files = bundle_files(args.repo)
+    if os.path.abspath(target) == os.path.abspath(args.repo):
+        LOG.ok(f"running from the installation itself ({target})")
+        if not read_install_record(args.data_dir).get("code_dir"):
+            LOG.info("  no install record yet; a full install or --update "
+                     "writes one, and later updates then find this "
+                     "directory on their own")
+    elif not os.path.isdir(target):
+        LOG.fail(f"the recorded installation is gone: {target}")
+        ok = False
+    else:
+        new_f, changed, diverged, _same, extra = classify_code(
+            repo_files, target, read_install_record(
+                args.data_dir).get("files") or {})
+        if not (new_f or changed or diverged):
+            LOG.ok(f"installed code matches this bundle ({target})")
+        else:
+            LOG.warn(f"installed code differs from this bundle ({target}): "
+                     f"{len(changed)} to update, {len(new_f)} missing, "
+                     f"{len(diverged)} changed outside this installer. Run "
+                     f"--update to bring it in line.")
+        for rel in extra:
+            LOG.info(f"  present there but not in this bundle: {rel}")
+
     # The pipeline looks for a named genome under ~/data/references unless
     # told otherwise. With a moved --data-dir it would not find the one just
     # installed, and would download a second copy instead.
@@ -1000,6 +1343,7 @@ STEPS = [
     ("pcgr-data", "PCGR bundle and VEP cache", step_pcgr_data),
     ("msi-models", "MSIsensor2 models for tumour-only MSI", step_msi_models),
     ("cosmic", "Import and rename a COSMIC VCF", step_cosmic),
+    ("code", "Install or update the pipeline scripts", step_code),
     ("man", "Install the man page", step_manpage),
     ("verify", "Verify the installation", step_verify),
 ]
@@ -1029,6 +1373,24 @@ def build_parser():
                         help="Run only these steps.")
     parser.add_argument("--skip", nargs="+", metavar="STEP", default=[],
                         help="Skip these steps.")
+    parser.add_argument("--code-dir", default=None, metavar="DIR",
+                        help="Where the installation's scripts live. "
+                             "Defaults to the directory recorded by the last "
+                             "install, and to this bundle when there is no "
+                             "record. Give it the first time you update an "
+                             "installation that predates the record.")
+    parser.add_argument("--keep-local", action="store_true",
+                        help="During --update, leave files that changed "
+                             "since they were installed. Use it on a machine "
+                             "carrying deliberate local edits; without it "
+                             "they are replaced (and backed up) like any "
+                             "other file.")
+    parser.add_argument("--update", action="store_true",
+                        help="Update an existing installation with THIS "
+                             "bundle's code: the scripts and the man page, "
+                             "then verify. Downloads nothing and touches no "
+                             "conda environment. Equivalent to "
+                             "--only code man verify.")
     parser.add_argument("--check", action="store_true",
                         help="Report what is missing and change nothing. "
                              "Equivalent to --only verify.")
@@ -1069,6 +1431,16 @@ def main():
 
     if args.check:
         args.only = ["verify"]
+    if args.update:
+        if args.check:
+            print("--update and --check ask for opposite things: one changes "
+                  "the installation, the other only reports on it.",
+                  file=sys.stderr)
+            return 2
+        # Code, man page, verify. Nothing is downloaded and no environment
+        # is touched: this is for a machine that is already installed and
+        # only needs the newer scripts.
+        args.only = ["code", "man", "verify"]
 
     valid = {name for name, _d, _f in STEPS}
     for group in (args.only or [], args.skip):
@@ -1082,9 +1454,12 @@ def main():
                 if (args.only is None or s[0] in args.only)
                 and s[0] not in args.skip]
 
+    code_dir, code_source = resolve_code_dir(args)
     print(f"{LOG._c(Log.BOLD, 'Cancer DNA pipeline installer')}")
     print(f"  repo     : {args.repo}")
     print(f"  data dir : {args.data_dir}")
+    if os.path.abspath(code_dir) != os.path.abspath(args.repo):
+        print(f"  installed: {code_dir}  ({code_source})")
     print(f"  steps    : {', '.join(s[0] for s in selected)}")
     if args.dry_run:
         print(f"  {LOG._c(Log.YELLOW, 'DRY RUN -- nothing will change')}")
@@ -1123,7 +1498,7 @@ def main():
             print(f"  export PIPELINE_REFERENCE_DIR="
                   f"{os.path.join(args.data_dir, 'references')}"
                   f"   # or the pipeline looks in ~/data/references")
-        print(f"  python {os.path.join(args.repo, 'webapp', 'app.py')} "
+        print(f"  python {os.path.join(code_dir, 'webapp', 'app.py')} "
               f"--allow-root {args.data_dir} --allow-root /path/to/fastqs")
     return 0
 

@@ -458,6 +458,41 @@ python comprehensive_variant_calling.py \
     --dry-run
 ```
 
+## 7aa. Updating an installed machine
+
+The installer installs the pipeline's own scripts as a step (`code`), and
+records where it put them under `--data-dir`. That record is what makes an
+update possible later without anyone having to remember the path:
+
+```bash
+# On the machine, running from a NEWER copy of the bundle:
+python3 /path/to/new_bundle/install_pipeline.py --update
+
+# First time on an installation that predates the record, name it once:
+python3 install_pipeline.py --update --code-dir ~/DNA_pipeline_installer
+
+# Or just ask whether it is behind, changing nothing:
+python3 install_pipeline.py --check
+```
+
+`--update` runs `code`, `man` and `verify` — no downloads, no conda work.
+Files are compared by content hash, so an update that has already been applied
+is a no-op, and:
+
+- everything replaced is first copied to `.bundle-backup-<timestamp>/` inside
+  the installation, mirroring its layout;
+- nothing is deleted — a file the installation has and the bundle does not is
+  reported and left alone;
+- a file that differs from both the bundle and the record of what was installed
+  changed outside the installer (an edit in place, or an older copy dropped
+  over the top — indistinguishable from here). Each one is named as it is
+  replaced, or left alone under `--keep-local`;
+- `SHA256SUMS` travels with the code, so the updated installation still passes
+  its own `sha256sum -c SHA256SUMS`.
+
+Restart the web interface afterwards. A run already in progress keeps using the
+code it started with, which is why an update mid-run does not disturb it.
+
 ## 7a. Manual page (optional)
 
 The four pipeline scripts, `pcgr_report.py` and `coverage_report.py` are

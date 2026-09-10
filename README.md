@@ -28,6 +28,30 @@ downloads. The bwa-mem2 index is the one long CPU step, about 15 minutes.
 Re-running is safe. Every step checks first and skips what is already complete,
 so an interrupted install is resumed by running the same command again.
 
+### Updating a machine that is already installed
+
+```bash
+# Copy the newer bundle across, then run it from there:
+python3 /path/to/new_bundle/install_pipeline.py --update
+```
+
+That replaces the **scripts** of the installation this machine already has,
+refreshes the man page and verifies. It downloads nothing and touches no conda
+environment, so it takes seconds — the 70 GB of databases is not what changed.
+
+The installer records where the code lives, so `--update` finds it on its own.
+The first time you update an installation that predates that record, point at
+it once with `--code-dir ~/DNA_pipeline_installer`; it is remembered after
+that. `python3 install_pipeline.py --check` says whether the installed code
+matches the bundle you are holding, and changes nothing.
+
+Whatever gets replaced is copied into `.bundle-backup-<timestamp>/` inside the
+installation first, and nothing is ever deleted. A file that changed since it
+was installed — edited in place, or an older copy dropped over the top, which
+cannot be told apart — is named individually as it is replaced; `--keep-local`
+leaves those alone instead. Restart the web interface afterwards to pick the
+new code up.
+
 ### Before you commit two hours
 
 ```bash
