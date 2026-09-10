@@ -21,8 +21,29 @@
   {% endif %}
   <p class="hint">Checked {{ db_notice.checked }}Z{% if db_notice.stale %} —
     <strong>{{ db_notice.age_days }} days ago; this may be out of date</strong>{% endif %}.
-    Nothing is downloaded or changed automatically: upgrading a database
-    mid-project shifts annotations, so it stays a decision you make.</p>
+    Checked once at startup and whenever you ask. Nothing is downloaded or
+    changed unless you start an upgrade yourself: doing it mid-project shifts
+    annotations, so it stays a decision you make.</p>
+  <p>
+    <a class="button ghost" href="{{ url_for('databases') }}">Manage databases</a>
+    <form method="post" action="{{ url_for('databases_check') }}"
+          style="display:inline">
+      <button class="button ghost" type="submit">Check now</button>
+    </form>
+  </p>
+  {% if db_task and db_task.status == 'running' %}
+    <p class="hint">{{ db_task.label }} — {{ db_task.stage }};
+      <a href="{{ url_for('databases') }}">watch it</a>.</p>
+  {% endif %}
+</section>
+{% elif db_task %}
+<section class="card">
+  <h2>Reference databases</h2>
+  <p class="hint">
+    {% if db_task.status == 'running' %}Checking now ({{ db_task.stage }})
+      — the result appears here when it lands.
+    {% else %}No check has completed yet.{% endif %}
+    <a href="{{ url_for('databases') }}">Manage databases</a>.</p>
 </section>
 {% endif %}
 

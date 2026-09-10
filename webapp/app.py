@@ -31,6 +31,12 @@ SECURITY POSTURE -- PLEASE READ
       typo -- or a hostile form post -- cannot walk into /etc.
     * Patient details are written to the run directory and never passed to
       the pipeline, so they cannot leak into logs or manifests.
+    * Database upgrades are a deliberate, guarded action. The app can run
+      install_pipeline.py to replace an installed database -- tens of GB,
+      and a change to what every later report says -- so it refuses while
+      a run is queued or in progress, requires a typed confirmation, and
+      runs only the single installer step named. There is no route that
+      deletes anything, and none that runs an arbitrary command.
 
   It is not a multi-user system, it has no audit trail beyond the run logs,
   and it is not a validated clinical application.
@@ -54,6 +60,7 @@ except ImportError:  # pragma: no cover - dependency guidance
     sys.exit("Flask is not installed. Install it with:  pip install flask")
 
 import jobs                                              # noqa: E402
+import maintenance                                        # noqa: E402
 from jobs import JobManager, build_pipeline_argv          # noqa: E402
 from report import (PATIENT_FIELDS, build_report,         # noqa: E402
                     find_pcgr_outputs, load_pipeline_manifest,
@@ -66,7 +73,15 @@ app = Flask(__name__)
 # Configured at startup by main(); see safe_path().
 app.config["ALLOWED_ROOTS"] = []
 app.config["RUNS_DIR"] = os.path.join(PIPELINE_DIR, "webapp_runs")
+# Where the installer put the references and databases. Same default as
+# _DATA below, which is what the form's resource paths are built from;
+# main() can point both at another location with --data-dir.
+app.config["DATA_DIR"] = os.path.expanduser("~/data")
 manager = None
+# Database checks and upgrades. Built in main() because it needs the run
+# directory for its logs; the module-level None keeps import-time use (and
+# the test client) honest about that.
+db_tasks = None
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +121,8 @@ def index():
     return render_template("index.html",
                            jobs=[j.snapshot() for j in manager.all()],
                            busy=manager.busy(),
-                           db_notice=database_notice())
+                           db_notice=database_notice(),
+                           db_task=db_tasks.snapshot() if db_tasks else None)
 
 
 @app.route("/new")
@@ -190,33 +206,49 @@ def tumour_site_label(code):
 # stays editable and clearable; this changes the default, not the rules.
 _DATA = os.path.expanduser("~/data")
 
-DEFAULT_RESOURCES = {
-    "dbsnp": f"{_DATA}/resources/hg38/Homo_sapiens_assembly38.dbsnp138.vcf.gz",
-    "germline_resource": f"{_DATA}/resources/hg38/af-only-gnomad.hg38.vcf.gz",
-    "panel_of_normals": f"{_DATA}/resources/hg38/1000g_pon.hg38.vcf.gz",
-    "contamination_resource":
-        f"{_DATA}/resources/hg38/small_exac_common_3.hg38.vcf.gz",
-    "cosmic":
-        f"{_DATA}/resources/hg38/Cosmic_GenomeScreensMutant_v103_GRCh38"
-        f".chr.vcf.gz",
-    "vep_dir": f"{_DATA}/vep_cache",
-    # The genome install_pipeline.py downloads and indexes. Offering the
-    # installed FASTA rather than the name "hg38" is what stops the pipeline
-    # downloading and re-indexing a private copy for every new output
-    # directory; --reference-dir covers the case where it must download.
-    "reference": f"{_DATA}/references/hg38/Homo_sapiens_assembly38.fasta",
-    "reference_dir": f"{_DATA}/references",
-    # Tumour-only MSI. PCGR omits MSI on a panel, so this is the only route
-    # to an MSI answer for a targeted assay.
-    "msi_models": f"{_DATA}/msisensor2/models_hg38",
-}
 
-# --known-indels takes several files, so it is kept apart from the map
-# above.
-DEFAULT_KNOWN_INDELS = [
-    f"{_DATA}/resources/hg38/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz",
-    f"{_DATA}/resources/hg38/Homo_sapiens_assembly38.known_indels.vcf.gz",
-]
+def default_resources(data=None):
+    """
+    The installer's layout, under whichever data directory is in use.
+
+    Derived rather than fixed at import, so --data-dir moves the suggested
+    paths, the database check and the upgrade actions together instead of
+    only the last two.
+    """
+    data = data or app.config["DATA_DIR"]
+    return {
+        "dbsnp":
+            f"{data}/resources/hg38/Homo_sapiens_assembly38.dbsnp138.vcf.gz",
+        "germline_resource":
+            f"{data}/resources/hg38/af-only-gnomad.hg38.vcf.gz",
+        "panel_of_normals": f"{data}/resources/hg38/1000g_pon.hg38.vcf.gz",
+        "contamination_resource":
+            f"{data}/resources/hg38/small_exac_common_3.hg38.vcf.gz",
+        "cosmic":
+            f"{data}/resources/hg38/Cosmic_GenomeScreensMutant_v103_GRCh38"
+            f".chr.vcf.gz",
+        "vep_dir": f"{data}/vep_cache",
+        # The genome install_pipeline.py downloads and indexes. Offering the
+        # installed FASTA rather than the name "hg38" is what stops the
+        # pipeline downloading and re-indexing a private copy for every new
+        # output directory; --reference-dir covers the case where it must
+        # download.
+        "reference": f"{data}/references/hg38/Homo_sapiens_assembly38.fasta",
+        "reference_dir": f"{data}/references",
+        # Tumour-only MSI. PCGR omits MSI on a panel, so this is the only
+        # route to an MSI answer for a targeted assay.
+        "msi_models": f"{data}/msisensor2/models_hg38",
+    }
+
+
+def default_known_indels(data=None):
+    """--known-indels takes several files, so it is kept apart from the map."""
+    data = data or app.config["DATA_DIR"]
+    return [
+        f"{data}/resources/hg38/Mills_and_1000G_gold_standard.indels.hg38"
+        f".vcf.gz",
+        f"{data}/resources/hg38/Homo_sapiens_assembly38.known_indels.vcf.gz",
+    ]
 
 
 def discover_defaults():
@@ -228,9 +260,11 @@ def discover_defaults():
     globbing, because its directory is named for the bundle release date and
     changes with every refresh.
     """
-    found = {k: v for k, v in DEFAULT_RESOURCES.items() if os.path.exists(v)}
+    data = app.config["DATA_DIR"]
+    found = {k: v for k, v in default_resources(data).items()
+             if os.path.exists(v)}
 
-    bundles = sorted(glob.glob(os.path.join(_DATA, "pcgr", "[0-9]" * 8)))
+    bundles = sorted(glob.glob(os.path.join(data, "pcgr", "[0-9]" * 8)))
     if bundles:
         found["pcgr_refdata_dir"] = bundles[-1]
 
@@ -238,7 +272,7 @@ def discover_defaults():
     # boxes start ticked. MSI is left off: PCGR honours it only for WGS/WES
     # tumour-normal runs and ignoring that just puts a misleading blank in
     # the report.
-    indels = [p for p in DEFAULT_KNOWN_INDELS if os.path.exists(p)]
+    indels = [p for p in default_known_indels(data) if os.path.exists(p)]
     if indels:
         found["known_indels"] = " ".join(indels)
     return found
@@ -522,6 +556,25 @@ def sample_output_dir(base, sample):
 # pipeline consults it.
 
 
+def load_db_status():
+    """
+    The raw status check_db_updates.py last wrote, or None.
+
+    Shared by the front-page notice and the databases page so both speak
+    from the same file rather than checking anything themselves -- no page
+    render ever touches the network.
+    """
+    try:
+        sys.path.insert(0, os.path.dirname(SCRIPT_VARIANT))
+        from check_db_updates import load_status
+    except Exception:                      # noqa: BLE001 - optional sibling
+        return None
+    try:
+        return load_status()
+    except Exception:                      # noqa: BLE001 - never fatal
+        return None
+
+
 def database_notice():
     """
     What the last database check found, or None.
@@ -531,12 +584,7 @@ def database_notice():
     result is surfaced as stale rather than quietly presented as current --
     "checked three months ago, all well" is not the same claim as "all well".
     """
-    try:
-        sys.path.insert(0, os.path.dirname(SCRIPT_VARIANT))
-        from check_db_updates import load_status
-    except Exception:
-        return None
-    status = load_status()
+    status = load_db_status()
     if not status:
         return None
     return {
@@ -820,6 +868,135 @@ def job_coverage(job_id, index=0):
     return send_file(reports[index])
 
 
+# ---------------------------------------------------------------------------
+# Reference databases: check, and upgrade
+# ---------------------------------------------------------------------------
+# The check is safe -- it reads remote metadata and writes one small status
+# file. An upgrade is not: it replaces the files runs read, downloads tens of
+# gigabytes, and shifts annotations for every report produced afterwards. So
+# an upgrade is refused while any run is queued or in progress, and asks for
+# a typed confirmation rather than being one click away from a stray tap.
+
+
+def db_rows():
+    """
+    Each checked database, with what can be done about it here.
+
+    Built from the last check's results so the page shows the same facts as
+    the front-page notice, plus the action for the rows that have one.
+    """
+    notice = load_db_status()
+    rows = []
+    for r in (notice or {}).get("results", []):
+        spec = maintenance.UPDATERS.get(r["name"])
+        rows.append({
+            "name": r["name"],
+            "state": r.get("state", "unknown"),
+            "installed": r.get("installed"),
+            "latest": r.get("latest"),
+            "note": r.get("note"),
+            "url": r.get("url"),
+            "action": spec["label"] if spec else None,
+            "warning": spec["warning"] if spec else None,
+            "needs_file": bool(spec and spec.get("needs_file")),
+            # Prefilled with the version the check found, because the
+            # installer would otherwise reinstall the release it is pinned
+            # to -- the one just reported as out of date.
+            "fields": [dict(f, value=(r.get("latest") or ""
+                                      if f.get("from_latest") else ""))
+                       for f in (spec or {}).get("fields", [])],
+        })
+    return rows
+
+
+@app.route("/databases")
+def databases():
+    return render_template(
+        "databases.html",
+        rows=db_rows(),
+        notice=request.args.get("notice"),
+        db_notice=database_notice(),
+        db_task=db_tasks.snapshot() if db_tasks else None,
+        run_busy=manager.busy() if manager else False,
+        roots=app.config["ALLOWED_ROOTS"])
+
+
+@app.route("/databases/check", methods=["POST"])
+def databases_check():
+    if db_tasks is None:
+        abort(503, "database tasks are not configured")
+    _task, error = db_tasks.start_check(reason="requested")
+    return redirect(url_for("databases", notice=error or "Checking now."))
+
+
+@app.route("/databases/update", methods=["POST"])
+def databases_update():
+    if db_tasks is None:
+        abort(503, "database tasks are not configured")
+    name = request.form.get("name", "")
+
+    # An upgrade mid-run would swap the databases underneath it, and would
+    # compete for the same disk and network the run needs.
+    if manager.busy():
+        return redirect(url_for(
+            "databases",
+            notice="A run is queued or in progress. Upgrading now would "
+                   "replace the databases it is reading; wait for it to "
+                   "finish."))
+
+    # Typed, not a checkbox: this is tens of gigabytes and hours, and it
+    # changes what every later report says.
+    if request.form.get("confirm", "").strip().upper() != "UPDATE":
+        return redirect(url_for(
+            "databases",
+            notice="Type UPDATE in the confirmation box to start an upgrade."))
+
+    cosmic = None
+    if request.form.get("cosmic"):
+        try:
+            cosmic = safe_path(request.form["cosmic"], must_exist=True)
+        except ValueError as exc:
+            return redirect(url_for("databases", notice=f"COSMIC VCF: {exc}"))
+
+    # Version targets go on a command line and into a directory name, so
+    # they are constrained here rather than trusted from the form.
+    extra = []
+    for field in maintenance.UPDATERS.get(name, {}).get("fields", []):
+        value = (request.form.get(field["name"]) or "").strip()
+        if not value:
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", value):
+            return redirect(url_for(
+                "databases",
+                notice=f"{field['label']}: {value!r} is not a version "
+                       f"(letters, digits, dot, dash, underscore)."))
+        extra.append((field["flag"], value))
+
+    _task, error = db_tasks.start_update(name, cosmic=cosmic, extra=extra)
+    return redirect(url_for(
+        "databases",
+        notice=error or f"Started: {name}. It keeps running if you close "
+                        f"this page."))
+
+
+@app.route("/api/databases")
+def databases_api():
+    """Polled by the databases page while a task runs."""
+    return jsonify({
+        "task": db_tasks.snapshot() if db_tasks else None,
+        "log": db_tasks.tail() if db_tasks else [],
+        "run_busy": manager.busy() if manager else False,
+    })
+
+
+@app.route("/databases/log")
+def databases_log():
+    task = db_tasks.task() if db_tasks else None
+    if not task or not os.path.exists(task.log_path):
+        abort(404, "no database task has run yet")
+    return send_file(task.log_path, mimetype="text/plain")
+
+
 @app.route("/job/<job_id>/log")
 def job_log(job_id):
     job = manager.get(job_id) or abort(404)
@@ -852,6 +1029,15 @@ def main():
                              "directory (repeatable). Strongly recommended: "
                              "without it, any path readable by this user can "
                              "be submitted.")
+    parser.add_argument("--data-dir", default=app.config["DATA_DIR"],
+                        help="Where the installer put the references and "
+                             "databases. Used for the database check, for "
+                             "the upgrade actions, and as the source of the "
+                             "form's suggested resource paths.")
+    parser.add_argument("--no-db-check", dest="db_check", action="store_false",
+                        help="Do not check for database updates at startup. "
+                             "The front page then shows the last check's "
+                             "result, however old it is.")
     parser.add_argument("--debug", action="store_true",
                         help="Flask debug mode. NEVER use this with real "
                              "patient data: the debugger allows arbitrary "
@@ -859,6 +1045,7 @@ def main():
     args = parser.parse_args()
 
     global manager
+    data_dir = os.path.abspath(os.path.expanduser(args.data_dir))
     runs_dir = os.path.abspath(
         os.path.expanduser(args.runs_dir or app.config["RUNS_DIR"]))
 
@@ -898,8 +1085,14 @@ def main():
 
     app.config["RUNS_DIR"] = runs_dir
     app.config["ALLOWED_ROOTS"] = roots
+    app.config["DATA_DIR"] = data_dir
     manager = JobManager(runs_dir)
     manager.load_existing()
+
+    global db_tasks
+    db_tasks = maintenance.Maintenance(
+        log_dir=os.path.join(runs_dir, "_database_tasks"),
+        script_dir=PIPELINE_DIR, data_dir=data_dir)
 
     print(f"[INFO] Pipeline scripts : {PIPELINE_DIR}")
     print(f"[INFO] Run directory    : {runs_dir}")
@@ -917,7 +1110,24 @@ def main():
         print("[WARN] Debug mode is ON. The Flask debugger permits arbitrary "
               "code execution from the browser -- never use it with real "
               "patient data.")
+    print(f"[INFO] Data directory   : {data_dir}")
     print(f"[INFO] Open http://{args.host}:{args.port}")
+
+    # Check the databases as the app comes up, in the background: the notice
+    # on the front page is then about today rather than about whenever
+    # somebody last remembered to run the checker. It only reads remote
+    # metadata and writes one small status file, so it cannot disturb a run
+    # -- and because it is a thread, a slow or unreachable source delays
+    # nothing. In debug mode Flask's reloader runs main() twice; the child
+    # process is the one that serves, so only it checks.
+    serving = not args.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+    if args.db_check and serving:
+        db_tasks.start_check(reason="startup")
+        print("[INFO] Checking reference databases in the background; the "
+              "front page shows the result when it lands.")
+    elif not args.db_check:
+        print("[INFO] Startup database check disabled (--no-db-check). The "
+              "front page shows whatever the last check found.")
 
     app.run(host=args.host, port=args.port, debug=args.debug,
             threaded=True)

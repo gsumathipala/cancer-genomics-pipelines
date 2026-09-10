@@ -22,6 +22,12 @@ WHAT IT WILL NOT DO
   make today's report disagree with last week's for reasons that have
   nothing to do with the sample. So this tells you, and stops.
 
+  Acting on it is install_pipeline.py's job. The web interface runs this
+  script at startup and on demand, and offers a per-database Update button
+  that runs the installer for that one step -- but the decision is still
+  taken by a person, in front of a warning, and never while a run is in
+  progress. Nothing in this file changes as a result: it still only reports.
+
 WHAT IT CHECKS
 --------------
   Ensembl VEP cache      release directory listing on ftp.ensembl.org

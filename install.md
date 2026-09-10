@@ -614,10 +614,19 @@ required.
 - **One run executes at a time.** The pipeline is already parallel internally;
   further submissions queue rather than contend for the same CPUs and RAM.
 - It is a single-analyst tool, not a multi-user or validated clinical system.
-- **The clinical report runs after the pipeline, as a separate process.** If
-  it fails, the run still reports `finished` — the call set is already on disk
-  and represents the hours — and the job page carries the reason under
+- **The clinical report runs after the pipeline, as a separate process**, in
+  PCGR's own conda environment. The run stays in a `reporting` state while it
+  does — not `finished` — so the page keeps polling, keeps the Cancel button,
+  and withholds the report buttons until there is a report to offer. If PCGR
+  then fails, the run still ends `finished`: the call set is already on disk
+  and represents the hours, and the job page carries the reason under
   `pcgr_status`. A run that ends without a report is not a run that failed.
+- **It can upgrade a reference database.** The Databases page runs the
+  update check at startup and on demand, and each row's *Update* runs one
+  `install_pipeline.py` step. That replaces files runs read and downloads tens
+  of gigabytes, so it is refused while a run is queued or in progress and
+  needs a typed confirmation. Nothing is ever deleted, and no route runs an
+  arbitrary command.
 
 FASTQs are referenced by path on the server rather than uploaded, since they
 are routinely tens of gigabytes.
@@ -626,7 +635,9 @@ are routinely tens of gigabytes.
 
 `check_db_updates.py` asks whether anything installed has a newer release and
 writes the answer to `~/.cache/cancer_pipeline/db_updates.json`. The web
-interface reads that file and shows a notice on its front page.
+interface runs it at startup (in the background — no page render ever waits on
+a remote server) and again whenever you press *Check now*, then shows the
+result on its front page and on its **Databases** page.
 
 ```bash
 python3 check_db_updates.py --print     # check now, show the result
@@ -638,13 +649,37 @@ Weekly, via cron:
 17 6 * * 1  /usr/bin/python3 /path/to/check_db_updates.py
 ```
 
-**It reports; it does not update.** It never writes to the data directory,
-never downloads a database, and never touches a conda environment — every
-check is an HTTP HEAD or a read-only API call. That is deliberate: a new VEP
-cache changes the transcript set and a new COSMIC changes identifiers, so an
-upgrade mid-project can make this week's report disagree with last week's for
-reasons that have nothing to do with the sample. Upgrade on purpose, then
-re-run the affected samples rather than mixing releases in one cohort.
+**This script reports; it does not update.** It never writes to the data
+directory, never downloads a database, and never touches a conda environment —
+every check is an HTTP HEAD or a read-only API call.
+
+Acting on a finding is the installer's job, and the webapp's Databases page is
+a front end for exactly that: each row's *Update* runs `install_pipeline.py`
+with one `--only` step and `--force`, then re-checks. The same thing from a
+shell, which is what the buttons run:
+
+```bash
+python3 install_pipeline.py --only pcgr-data  --force --vep-release 116
+python3 install_pipeline.py --only pcgr-envs  --force --pcgr-version 2.3.3
+python3 install_pipeline.py --only pcgr-data  --force --pcgr-bundle 20261201
+python3 install_pipeline.py --only resources  --force      # repairs drift
+python3 install_pipeline.py --only msi-models --force
+python3 install_pipeline.py --only cosmic --cosmic /path/to/downloaded.vcf.gz
+```
+
+`--vep-release`, `--pcgr-version` and `--pcgr-bundle` exist because the
+installer pins the versions this bundle was tested against; without them
+`--force` would reinstall the release the check just called outdated. They are
+pinned *together* on purpose — PCGR's environment installs a particular
+Ensembl VEP, a cache release must match that VEP, and the bundle must match
+PCGR — so move them in one sitting rather than one at a time.
+
+Upgrading is still a decision, not housekeeping: a new VEP cache changes the
+transcript set and a new COSMIC changes identifiers, so an upgrade mid-project
+can make this week's report disagree with last week's for reasons that have
+nothing to do with the sample. The webapp refuses one while a run is queued or
+in progress, and asks for a typed confirmation. Upgrade on purpose, then re-run
+the affected samples rather than mixing releases in one cohort.
 
 It exits 0 even when checks fail, so a cron entry stays quiet; `--strict`
 exits 1 when something needs attention, for a monitoring system that wants

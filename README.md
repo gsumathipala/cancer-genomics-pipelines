@@ -87,12 +87,24 @@ is the fastest way to tell whether an environment has drifted.
 python3 check_db_updates.py --print       # any newer database releases?
 ```
 
-Writes its answer to `~/.cache/cancer_pipeline/db_updates.json`, which the web
-interface shows on its front page. Run it weekly from cron if you like. It
+Writes its answer to `~/.cache/cancer_pipeline/db_updates.json`. The script
 **reports only** — nothing is downloaded or replaced, and no run reads it.
-Upgrade deliberately: a new VEP cache changes the transcript set and a new
-COSMIC changes identifiers, so mixing releases within a cohort makes reports
-disagree for reasons unrelated to the samples.
+
+The web interface runs it **at startup** and whenever you press *Check now*, so
+its front page is about today rather than about whenever someone last
+remembered. Its **Databases** page lists every checked source and offers a
+per-database **Update**, which runs `install_pipeline.py` for that one step and
+re-checks afterwards. An upgrade is refused while a run is queued or in
+progress, and asks you to type UPDATE first — because it is a real decision:
+a new VEP cache changes the transcript set and a new COSMIC changes
+identifiers, so mixing releases within a cohort makes reports disagree for
+reasons unrelated to the samples.
+
+```bash
+# The same upgrades from a shell, which is what the buttons run:
+python3 install_pipeline.py --only pcgr-data --force --vep-release 116
+python3 install_pipeline.py --only resources --force
+```
 
 ---
 

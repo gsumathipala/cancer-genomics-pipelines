@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Reference databases &middot; Cancer DNA Pipeline{% endblock %}
+{% block content %}
+
+<h1>Reference databases</h1>
+
+{% if notice %}<p class="note">{{ notice }}</p>{% endif %}
+
+<section class="card">
+  <div class="statusline">
+    <h2 style="margin:0">What the last check found</h2>
+    <form method="post" action="{{ url_for('databases_check') }}">
+      <button class="button ghost" type="submit">Check now</button>
+    </form>
+  </div>
+  {% if db_notice %}
+    <p class="hint">Checked {{ db_notice.checked }}Z{% if db_notice.stale %}
+      &mdash; <strong>{{ db_notice.age_days }} days ago; this may be out of
+      date</strong>{% endif %}. The app checks once at startup; nothing is
+      checked while a page is being served, so no request ever waits on a
+      remote server.</p>
+  {% else %}
+    <p class="hint">No check has completed yet. One runs at startup &mdash;
+      give it a moment, or press <em>Check now</em>.</p>
+  {% endif %}
+
+  {% if rows %}
+  <table class="grid">
+    <thead>
+      <tr><th>Database</th><th>Installed</th><th>Latest</th><th>State</th>
+        <th>Action</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td><strong>{{ r.name }}</strong>
+          {% if r.note %}<br><span class="hint">{{ r.note }}</span>{% endif %}
+          {% if r.url %}<br><a class="hint" href="{{ r.url }}" target="_blank"
+            rel="noopener noreferrer">{{ r.url }}</a>{% endif %}
+        </td>
+        <td class="small">{{ r.installed or '—' }}</td>
+        <td class="small">{{ r.latest or '—' }}</td>
+        <td>
+          {% if r.state == 'update' %}<span class="status queued">update available</span>
+          {% elif r.state == 'changed' %}<span class="status failed">local copy differs</span>
+          {% elif r.state == 'manual' %}<span class="status cancelled">check manually</span>
+          {% elif r.state == 'current' %}<span class="status finished">current</span>
+          {% else %}<span class="status interrupted">unknown</span>{% endif %}
+        </td>
+        <td>
+          {% if r.action %}
+            <details>
+              <summary class="button ghost">Update…</summary>
+              <p class="hint">{{ r.warning }}</p>
+              <form method="post" action="{{ url_for('databases_update') }}">
+                <input type="hidden" name="name" value="{{ r.name }}">
+                {% if r.needs_file %}
+                  <label><span>Path to the downloaded VCF</span>
+                    <input name="cosmic" required
+                           placeholder="/data/Cosmic_GenomeScreensMutant_GRCh38.vcf.gz"></label>
+                {% endif %}
+                {% for f in r.fields %}
+                  <label><span>{{ f.label }}</span>
+                    <input name="{{ f.name }}" value="{{ f.value }}"
+                           autocomplete="off"></label>
+                {% endfor %}
+                <label><span>Type UPDATE to confirm</span>
+                  <input name="confirm" required autocomplete="off"
+                         placeholder="UPDATE"></label>
+                <button class="button danger" type="submit"
+                  {% if run_busy or (db_task and db_task.status == 'running') %}disabled{% endif %}>
+                  Update {{ r.action }}</button>
+                {% if run_busy %}
+                  <p class="hint warn">Disabled: a run is queued or in
+                    progress. An upgrade would replace the databases it is
+                    reading.</p>
+                {% endif %}
+              </form>
+            </details>
+          {% else %}
+            <span class="hint">—</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <p class="hint">An upgrade runs <code>install_pipeline.py</code> for that
+    one step, with <code>--force</code>, and re-checks afterwards so this page
+    shows what is now installed. Upgrading mid-project is a real decision: a
+    new VEP cache changes transcript sets and a new COSMIC changes
+    identifiers, so a report regenerated after one can legitimately disagree
+    with the report issued last week for the same sample.</p>
+</section>
+
+<section class="card">
+  <div class="statusline">
+    <h2 style="margin:0">Task</h2>
+    <span class="status {{ (db_task.status if db_task else 'queued') }}"
+          id="taskstatus">{{ db_task.status if db_task else 'none yet' }}</span>
+    <span class="small" id="taskstage">{{ db_task.stage if db_task else '' }}</span>
+  </div>
+  <p class="small" id="tasklabel">{{ db_task.label if db_task else
+    'Nothing has been started from this page.' }}</p>
+  {% if db_task and db_task.error %}
+    <p class="errortext" id="taskerror">{{ db_task.error }}</p>
+  {% else %}
+    <p class="errortext" id="taskerror" hidden></p>
+  {% endif %}
+  <pre id="tasklog" class="log">{% if not db_task %}(no output yet){% endif %}</pre>
+  <p><a class="button ghost" href="{{ url_for('databases_log') }}">Full log</a></p>
+</section>
+
+<script>
+// Poll while a task runs. Upgrades take hours, so the page must be readable
+// the whole time rather than only reporting at the end -- and it must stop
+// polling once nothing is running, like the job page does.
+const logEl = document.getElementById('tasklog');
+
+async function poll() {
+  let again = false;
+  try {
+    const res = await fetch('{{ url_for("databases_api") }}');
+    if (res.ok) {
+      const data = await res.json();
+      const t = data.task;
+      if (t) {
+        document.getElementById('taskstatus').textContent = t.status;
+        document.getElementById('taskstatus').className = 'status ' + t.status;
+        document.getElementById('taskstage').textContent = t.stage || '';
+        document.getElementById('tasklabel').textContent = t.label;
+        const err = document.getElementById('taskerror');
+        err.textContent = t.error || '';
+        err.hidden = !t.error;
+        again = t.status === 'running';
+      }
+      const atBottom =
+        logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 40;
+      logEl.textContent = (data.log || []).join('\n') || '(no output yet)';
+      if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+      // A finished task changes what the table above says, and whether the
+      // buttons are usable; reload once rather than patching both by hand.
+      if (!again && window._wasRunning) window.location.reload();
+      window._wasRunning = again;
+    }
+  } catch (e) { again = true; }        // transient: try again
+  if (again) setTimeout(poll, 2000);
+}
+poll();
+</script>
+
+{% endblock %}

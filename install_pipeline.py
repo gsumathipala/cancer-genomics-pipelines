@@ -137,17 +137,34 @@ RESOURCE_FILES = [
      "small_exac_common_3.hg38.vcf.gz.tbi"),
 ]
 
+# The versions this bundle was built and tested against. They are DEFAULTS,
+# not hard-coded facts: --pcgr-version, --pcgr-bundle and --vep-release move
+# them, which is what makes an upgrade possible without editing this file.
+#
+# They are pinned together on purpose. PCGR's conda environment installs a
+# particular Ensembl VEP, and a cache release must match that VEP; the
+# reference bundle must in turn match the PCGR version. Moving one alone is
+# how an install ends up with a report that will not build, so the three
+# defaults change together when this bundle is updated.
 PCGR_VERSION = "2.3.2"
-PCGR_LOCK = (f"https://raw.githubusercontent.com/sigven/pcgr/"
-             f"v{PCGR_VERSION}/conda/env/lock")
 PCGR_BUNDLE_RELEASE = "20260620"
-PCGR_BUNDLE_URL = (f"https://insilico.hpc.uio.no/pcgr/"
-                   f"pcgr_ref_data.{PCGR_BUNDLE_RELEASE}.grch38.tgz")
-
 VEP_RELEASE = "115"
-VEP_CACHE_URL = (f"https://ftp.ensembl.org/pub/release-{VEP_RELEASE}/"
-                 f"variation/indexed_vep_cache/"
-                 f"homo_sapiens_vep_{VEP_RELEASE}_GRCh38.tar.gz")
+
+
+def pcgr_lock_url(version):
+    return (f"https://raw.githubusercontent.com/sigven/pcgr/"
+            f"v{version}/conda/env/lock")
+
+
+def pcgr_bundle_url(release):
+    return (f"https://insilico.hpc.uio.no/pcgr/"
+            f"pcgr_ref_data.{release}.grch38.tgz")
+
+
+def vep_cache_url(release):
+    return (f"https://ftp.ensembl.org/pub/release-{release}/"
+            f"variation/indexed_vep_cache/"
+            f"homo_sapiens_vep_{release}_GRCh38.tar.gz")
 
 # MSIsensor2's tumour-only mode needs a trained model directory, which the
 # conda package does NOT ship -- only the binary. The models live in the
@@ -518,8 +535,9 @@ def verify_jdk(args):
 def step_pcgr_envs(args):
     """PCGR's two environments, from upstream's pinned lock files."""
     ok = True
-    for name, lock in ((PCGR_ENV, f"{PCGR_LOCK}/pcgr-linux-64.lock"),
-                       (PCGRR_ENV, f"{PCGR_LOCK}/pcgrr-linux-64.lock")):
+    lock_root = pcgr_lock_url(args.pcgr_version)
+    for name, lock in ((PCGR_ENV, f"{lock_root}/pcgr-linux-64.lock"),
+                       (PCGRR_ENV, f"{lock_root}/pcgrr-linux-64.lock")):
         if env_exists(name) and not args.force:
             LOG.skip(f"environment '{name}' exists")
             continue
@@ -659,7 +677,7 @@ def _extract_tgz(url, dest_dir, marker, label, args):
 def step_pcgr_data(args):
     """PCGR's reference bundle and the Ensembl VEP cache."""
     pcgr_root = os.path.join(args.data_dir, "pcgr")
-    release_dir = os.path.join(pcgr_root, PCGR_BUNDLE_RELEASE)
+    release_dir = os.path.join(pcgr_root, args.pcgr_bundle)
     marker = os.path.join(release_dir, "data", "grch38")
 
     ok = True
@@ -670,15 +688,16 @@ def step_pcgr_data(args):
         # named for the release -- that name is how PCGR is pointed at it.
         if not args.dry_run:
             os.makedirs(release_dir, exist_ok=True)
-        if not _extract_tgz(PCGR_BUNDLE_URL, release_dir,
-                            marker, "PCGR reference bundle", args):
+        if not _extract_tgz(pcgr_bundle_url(args.pcgr_bundle), release_dir,
+                            marker, f"PCGR reference bundle "
+                                    f"{args.pcgr_bundle}", args):
             ok = False
 
     vep_dir = os.path.join(args.data_dir, "vep_cache")
     vep_marker = os.path.join(vep_dir, "homo_sapiens",
-                              f"{VEP_RELEASE}_GRCh38")
-    if not _extract_tgz(VEP_CACHE_URL, vep_dir, vep_marker,
-                        f"Ensembl VEP {VEP_RELEASE} cache", args):
+                              f"{args.vep_release}_GRCh38")
+    if not _extract_tgz(vep_cache_url(args.vep_release), vep_dir, vep_marker,
+                        f"Ensembl VEP {args.vep_release} cache", args):
         ok = False
     return ok
 
@@ -892,10 +911,10 @@ def step_verify(args):
             LOG.fail(f"environment '{name}' missing -- no clinical reports")
             ok = False
 
-    bundle = os.path.join(args.data_dir, "pcgr", PCGR_BUNDLE_RELEASE,
+    bundle = os.path.join(args.data_dir, "pcgr", args.pcgr_bundle,
                           "data", "grch38")
     vep = os.path.join(args.data_dir, "vep_cache", "homo_sapiens",
-                       f"{VEP_RELEASE}_GRCh38")
+                       f"{args.vep_release}_GRCh38")
     for path, label in ((bundle, "PCGR bundle"), (vep, "VEP cache")):
         if os.path.isdir(path):
             LOG.ok(f"{label} present")
@@ -1015,6 +1034,22 @@ def build_parser():
                              "Equivalent to --only verify.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print every command without running any.")
+    parser.add_argument("--pcgr-version", default=PCGR_VERSION,
+                        metavar="X.Y.Z",
+                        help="PCGR release to build the conda environments "
+                             "from (default: %(default)s). Its reference "
+                             "bundle and VEP cache must match it.")
+    parser.add_argument("--pcgr-bundle", default=PCGR_BUNDLE_RELEASE,
+                        metavar="YYYYMMDD",
+                        help="PCGR reference bundle release (default: "
+                             "%(default)s). The bundle is installed into a "
+                             "directory named for it, so two releases can "
+                             "coexist and a run names the one it wants.")
+    parser.add_argument("--vep-release", default=VEP_RELEASE, metavar="N",
+                        help="Ensembl VEP cache release (default: "
+                             "%(default)s). It must match the VEP that "
+                             "PCGR's own environment installs: a newer cache "
+                             "with an older VEP is refused by VEP itself.")
     parser.add_argument("--force", action="store_true",
                         help="Redo steps whose output already exists. Will "
                              "re-download tens of gigabytes.")
