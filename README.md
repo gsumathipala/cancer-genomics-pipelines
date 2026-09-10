@@ -144,9 +144,15 @@ python3 install_pipeline.py --only resources --force
 | Ensembl VEP cache | `~/data/vep_cache/` | 24 GB |
 | SnpEff database | inside the conda environment | 448 MB |
 | MSIsensor2 models | `~/data/msisensor2/models_hg38/` | 251 MB |
+| The pipeline scripts | wherever you keep this bundle | 1 MB |
+| Install record | `~/data/pipeline_install.json` | 20 KB |
 
 Change the data location with `--data-dir`. The conda environments go wherever
 conda keeps its environments.
+
+The install record is how `--update` and `--check` find the scripts later: it
+holds the directory they were installed to and a hash per file. Delete it and
+they fall back to `--code-dir`.
 
 Every run reuses that one indexed hg38: `--reference hg38` is resolved against
 `--reference-dir` (default `~/data/references`) before anything is downloaded,
@@ -159,7 +165,8 @@ run.
 ## Contents of this bundle
 
 ```
-install_pipeline.py               the installer
+install_pipeline.py               the installer, and `--update` for a
+                                  machine that already has one
 environment.yml                   the analysis environment definition
 
 comprehensive_variant_calling.py  the engine — all 14 steps, self-contained
@@ -216,6 +223,9 @@ misleading when it goes wrong:
 ```bash
 sha256sum -c SHA256SUMS
 ```
+
+The same command works inside an installation that `--update` has refreshed:
+the manifest travels with the code, so it describes what is actually there.
 
 ---
 

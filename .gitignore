@@ -6,6 +6,11 @@ __pycache__/
 webapp_runs/
 webapp/webapp_runs/
 
+# Written by `install_pipeline.py --update` when this checkout IS the
+# installation being updated: the previous copy of every replaced file.
+# Useful to keep on disk, never something to commit.
+.bundle-backup-*/
+
 # Pipeline outputs
 *.bam
 *.bai

@@ -1365,6 +1365,17 @@ COSMIC:
 .UR https://cancer.sanger.ac.uk/cosmic
 .UE .
 .PP
+.B install_pipeline.py
+installs these scripts and everything they depend on, and
+.B "install_pipeline.py \-\-update"
+run from a newer copy of the bundle refreshes the scripts of an
+already-installed machine without touching its databases or conda
+environments;
+.B \-\-check
+reports whether they are behind. See
+.I install.md
+in the bundle.
+.PP
 Each script also carries a DEBUGGING NOTES section in its module docstring
 covering behaviour that is easy to misread from the outside; run
 .B "python3 <script> \-\-help"

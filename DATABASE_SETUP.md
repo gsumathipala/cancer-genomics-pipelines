@@ -19,6 +19,13 @@ COSMIC is the exception — it needs a registered account, so download it
 yourself and pass `--cosmic <file>`. The script renames its contigs to UCSC
 style, which is the step that is silent when skipped.
 
+The same script updates a machine that is already installed. Run a newer
+bundle's copy of it with `--update` and it refreshes the pipeline's scripts
+in place — no downloads, no conda work, seconds — leaving every database on
+this page exactly where it is. `--check` says whether the installed code is
+behind, alongside what it already says about the databases. See `install.md`
+§7aa.
+
 The rest of this page explains the layout, what each database is for, and what
 happens when one is missing.
 
@@ -204,6 +211,13 @@ commands are in `install.md` §6.
 
 ~/data/pcgr/20260620/data/grch38/                  7.3 GB   PCGR reference bundle
 ~/data/vep_cache/homo_sapiens/115_GRCh38/           24 GB   Ensembl VEP cache
+
+~/data/pipeline_install.json                        20 KB   not a database: where
+                                                            the scripts were
+                                                            installed, and a hash
+                                                            per file, so
+                                                            `--update` can find
+                                                            and refresh them
 ```
 
 PCGR's two paths are passed as `--pcgr-refdata-dir ~/data/pcgr/20260620` and

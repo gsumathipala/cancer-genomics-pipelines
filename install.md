@@ -88,6 +88,8 @@ the traps below as checks rather than paragraphs a reader has to notice.
 python3 install_pipeline.py --check     # what is missing; changes nothing
 python3 install_pipeline.py --dry-run   # print every command, run none
 python3 install_pipeline.py             # install what is missing
+python3 install_pipeline.py --update    # refresh an installed machine's
+                                        # scripts from THIS bundle (§7aa)
 ```
 
 About 70 GB and roughly two hours, most of it waiting on downloads. Re-running
@@ -96,8 +98,9 @@ interrupted install is resumed by running it again.
 
 It verifies rather than assumes — the JDK is in the 21–23 window, indices sit
 beside their data, every VCF has its `.tbi`, `pcgr` and `pcgrr` are siblings,
-and the pipeline script starts. `--check` alone is a useful health check on a
-machine you inherited.
+the helper scripts start, and the installed code matches the bundle you are
+holding. `--check` alone is a useful health check on a machine you inherited,
+and it is what tells you whether that machine needs `--update`.
 
 COSMIC needs a registered account, so it cannot be fetched unattended.
 Download it yourself and pass `--cosmic <file>`; the script renames its
@@ -780,7 +783,7 @@ partial install can be detected rather than discovered later at runtime.
 |---|-----------|-----------|--------------|-------------|
 | 1 | Conda/mamba | yes (or install tools by hand) | ~100 MB | `conda --version` |
 | 2 | `environment.yml` env | yes | ~3–5 GB | `conda activate cancer_pipeline` |
-| 3 | Pipeline scripts | yes | <1 MB | `python comprehensive_variant_calling.py --help` |
+| 3 | Pipeline scripts | yes | <1 MB | `python comprehensive_variant_calling.py --help`, or `install_pipeline.py --check` for whether they are current |
 | 4 | Reference genome (hg38) + indices | yes | 3.1 GB + 17 GB indices | `ls hg38.fa.fai hg38.dict hg38.fa.bwt.2bit.64` |
 | 5 | SnpEff database | for step 11 | ~450 MB | `snpEff databases \| grep -w hg38` |
 | 6 | dbSNP / known indels | for BQSR (step 4) | ~1.6 GB | file exists + `.tbi` |
@@ -805,9 +808,13 @@ mamba env create -f environment.yml
 conda activate cancer_pipeline
 
 # 3. Scripts: no build step; they are run in place. If installing to a
-#    prefix, keep all five .py files in ONE directory -- the orchestrator
+#    prefix, keep every .py file in ONE directory -- the orchestrator
 #    locates its siblings relative to itself, and the variant caller
-#    imports pcgr_report from alongside it.
+#    imports pcgr_report and coverage_report from alongside it.
+#    install_pipeline.py's `code` step does this copy for you, records
+#    where it put them, and can refresh them later from a newer bundle:
+#        python3 install_pipeline.py --only code --code-dir /opt/pipeline
+#        python3 /path/to/newer_bundle/install_pipeline.py --update
 
 # 4. Reference (the pipeline can fetch hg38 itself, but indexing is what
 #    the first real run otherwise spends its time on).
