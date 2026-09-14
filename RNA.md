@@ -236,6 +236,11 @@ Reports two RNA-specific things, and only when the branch is installed:
   outside of a run, and getting it wrong is silent: STAR runs, the mapping
   rate looks normal, and the junctions it knows about are the old ones.
 
+The web interface's **Databases** page offers both as buttons, and the
+GENCODE one runs *both* steps: upgrading the annotation without rebuilding
+the index is not a shortcut, it is the inconsistency the check exists to
+catch.
+
 Upgrading the annotation means rebuilding the index, because the annotation
 is baked into it:
 

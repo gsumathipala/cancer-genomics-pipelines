@@ -403,16 +403,14 @@ def check_gencode(data_dir):
     latest = found[-1] if found else None
     if latest and latest > installed:
         return result(
-            "GENCODE annotation (RNA)", f"v{installed}", f"v{latest}",
-            "update",
+            "GENCODE annotation (RNA)", installed, latest, "update",
             f"release {latest} available. The annotation is baked into the "
             f"STAR index, so upgrading means rebuilding it "
             f"(install_pipeline.py --only gencode star-index --force) -- "
             f"about an hour. Gene names and transcript sets shift between "
             f"releases, so do not mix them within a cohort.",
             f"{url}release_{latest}/")
-    return result("GENCODE annotation (RNA)", f"v{installed}",
-                  f"v{latest}" if latest else None, "current")
+    return result("GENCODE annotation (RNA)", installed, latest, "current")
 
 
 def check_star_index(data_dir):

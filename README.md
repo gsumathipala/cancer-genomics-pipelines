@@ -218,7 +218,9 @@ With the RNA branch installed it also checks the **GENCODE release** and
 whether each **STAR index is still consistent with it**. That second check
 has no other home: an index outliving the annotation it was built from is
 completely silent — STAR runs, the mapping rate looks normal, and the
-junctions it knows about are the old ones.
+junctions it knows about are the old ones. Both appear on the **Databases**
+page with an Update button, and upgrading GENCODE rebuilds the index in the
+same action.
 
 The web interface runs it **at startup** and whenever you press *Check now*, so
 its front page is about today rather than about whenever someone last
