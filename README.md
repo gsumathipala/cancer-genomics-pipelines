@@ -297,6 +297,8 @@ install.md                        manual install, and the reference the installe
 DATABASE_SETUP.md                 what each database is for, and where it goes
 PANELS.md                         running more than one panel, and adding
                                   a kit of your own
+PIPELINE_ANATOMY.md               how the whole thing fits together, and
+                                  what it teaches about writing one
 CNV_SCOPE.md                      copy-number: designed, not built — read before starting it
 
 check_db_updates.py               tells you when a database has a newer release
