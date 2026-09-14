@@ -594,6 +594,7 @@ def build_pcgr_command(input_vcf, output_dir, sample_id, refdata_dir,
                        tumour_dp_tag=None, tumour_af_tag=None,
                        control_dp_tag=None, control_af_tag=None,
                        force_overwrite=True, legacy_v1=False,
+                       rna_fusion=None, fusion_min_split_reads=None,
                        extra_args=None):
     """
     Assemble the PCGR command line.
@@ -623,6 +624,16 @@ def build_pcgr_command(input_vcf, output_dir, sample_id, refdata_dir,
         *_dp_tag/*_af_tag: INFO tag names carrying depth / allele fraction.
                         See the module docstring -- Mutect2 does not provide
                         these in INFO by default.
+        rna_fusion:     TSV of RNA fusions in PCGR's schema (FusionGene,
+                        LeftBreakpoint, RightBreakpoint, SplitReads).
+                        fusion_report.write_pcgr_fusion_tsv() produces it
+                        from Arriba output. May be given WITHOUT a VCF --
+                        PCGR needs only one molecular input -- or WITH one,
+                        which is how the DNA and RNA libraries of a single
+                        specimen become one report.
+        fusion_min_split_reads:
+                        PCGR's own support floor for a fusion (default 3,
+                        minimum 2).
         legacy_v1:      Emit the PCGR 1.x reference-bundle flag spelling.
         extra_args:     List of raw arguments appended verbatim, for options
                         this wrapper does not model.
@@ -630,8 +641,17 @@ def build_pcgr_command(input_vcf, output_dir, sample_id, refdata_dir,
     RETURNS:
         list: argv for subprocess.
     """
-    cmd = ["pcgr", "--input_vcf", input_vcf, "--output_dir", output_dir,
-           "--sample_id", sample_id]
+    cmd = ["pcgr", "--output_dir", output_dir, "--sample_id", sample_id]
+
+    # PCGR 2.x requires AT LEAST ONE molecular input and treats each as
+    # optional: a somatic VCF, copy-number segments, RNA fusions, or RNA
+    # expression. So a fusion-only report is a supported configuration,
+    # not a workaround -- which is what lets the RNA branch produce a real
+    # clinical interpretation instead of only a table.
+    if input_vcf:
+        cmd += ["--input_vcf", input_vcf]
+    if rna_fusion:
+        cmd += ["--input_rna_fusion", rna_fusion]
 
     # The reference bundle flag was renamed between the 1.x and 2.x series.
     cmd += ["--pcgr_dir" if legacy_v1 else "--refdata_dir", refdata_dir]
@@ -681,6 +701,12 @@ def build_pcgr_command(input_vcf, output_dir, sample_id, refdata_dir,
         if value:
             cmd += [flag, value]
 
+    # PCGR's own floor for how many split reads a fusion needs before it
+    # appears in the report. Its default is 3 and its minimum is 2; left
+    # unset, PCGR applies its default silently.
+    if fusion_min_split_reads:
+        cmd += ["--fusion_min_split_reads", str(fusion_min_split_reads)]
+
     if force_overwrite:
         cmd.append("--force_overwrite")
 
@@ -729,9 +755,18 @@ def run_pcgr(input_vcf, output_dir, sample_id, refdata_dir, vep_dir=None,
              estimate_msi=False, estimate_signatures=False,
              tumour_only=False, tumour_dp_tag=None, tumour_af_tag=None,
              control_dp_tag=None, control_af_tag=None, legacy_v1=False,
+             rna_fusion=None, fusion_min_split_reads=None,
              extra_args=None, log_path=None, dry_run=False):
     """
-    Run PCGR over a somatic VCF.
+    Run PCGR over a somatic VCF, an RNA fusion table, or both.
+
+    THREE SHAPES, ALL SUPPORTED BY PCGR 2.x
+      VCF only      the classic somatic report.
+      FUSIONS only  what an RNA-only run produces. PCGR requires just one
+                    molecular input, and does NOT need a VEP cache in this
+                    shape, because there is no VCF to annotate.
+      BOTH          the DNA and RNA libraries of one specimen interpreted
+                    together, which is how they are reported clinically.
 
     RETURN CONVENTION (matches run_snpeff() / annotate_cosmic() in
     comprehensive_variant_calling.py, so callers can treat all three the
@@ -761,23 +796,56 @@ def run_pcgr(input_vcf, output_dir, sample_id, refdata_dir, vep_dir=None,
               f"skipping PCGR report.")
         return None
 
-    # PCGR 2.x refuses --input_vcf without --vep_dir, and it refuses it
-    # AFTER the caller has spent its hours getting here. Say so up front,
-    # in terms of this script's own option rather than PCGR's.
-    if not vep_dir:
-        print("[WARN] No VEP cache given (--vep-dir); skipping PCGR report.")
-        print("       PCGR annotates with Ensembl VEP and rejects an input "
-              "VCF without a cache;")
-        print("       the installer puts one in ~/data/vep_cache.")
+    # At least one molecular input, because PCGR enforces that itself and
+    # does so only after start-up.
+    if not input_vcf and not rna_fusion:
+        print("[WARN] No molecular input for PCGR (neither a somatic VCF nor "
+              "an RNA fusion table); skipping PCGR report.")
         return None
 
-    if not dry_run and not os.path.isdir(vep_dir):
-        print(f"[WARN] VEP cache not found: {vep_dir}; skipping PCGR report.")
-        return None
+    # The VEP cache is required ONLY for a VCF. PCGR's own arg_checker ties
+    # --vep_dir to --input_vcf, so demanding one for a fusion-only report
+    # would refuse a configuration PCGR supports.
+    if input_vcf:
+        if not vep_dir:
+            print("[WARN] No VEP cache given (--vep-dir); skipping PCGR "
+                  "report.")
+            print("       PCGR annotates with Ensembl VEP and rejects an "
+                  "input VCF without a cache;")
+            print("       the installer puts one in ~/data/vep_cache.")
+            return None
+        if not dry_run and not os.path.isdir(vep_dir):
+            print(f"[WARN] VEP cache not found: {vep_dir}; skipping PCGR "
+                  f"report.")
+            return None
+        if not dry_run and not os.path.exists(input_vcf):
+            print(f"[WARN] Input VCF not found: {input_vcf}; "
+                  f"skipping PCGR report.")
+            return None
 
-    if not dry_run and not os.path.exists(input_vcf):
-        print(f"[WARN] Input VCF not found: {input_vcf}; "
-              f"skipping PCGR report.")
+    if rna_fusion and not dry_run:
+        if not os.path.exists(rna_fusion):
+            print(f"[WARN] RNA fusion table not found: {rna_fusion}; "
+                  f"continuing without it.")
+            rna_fusion = None
+        elif os.path.getsize(rna_fusion) <= 0:
+            rna_fusion = None
+        else:
+            # PCGR REJECTS AN EMPTY FUSION FILE outright -- header only is
+            # an error, not an empty section -- and a run with no fusions
+            # is an ordinary outcome, not a failure. Drop the input rather
+            # than let PCGR abort over it.
+            with open(rna_fusion, encoding="utf-8") as fh:
+                lines = sum(1 for line in fh if line.strip())
+            if lines < 2:
+                print("[INFO] The fusion table has no calls in it. PCGR "
+                      "rejects an empty fusion file, so it is not passed; "
+                      "no fusions found is a result, not an error.")
+                rna_fusion = None
+
+    if not input_vcf and not rna_fusion:
+        print("[WARN] Nothing left to report on after checking the inputs; "
+              "skipping PCGR.")
         return None
 
     os.makedirs(output_dir, exist_ok=True)
@@ -787,12 +855,13 @@ def run_pcgr(input_vcf, output_dir, sample_id, refdata_dir, vep_dir=None,
     # INFO wholesale -- STRAND being the one that actually collides today.
     # Strip them into a separate file rather than editing the pipeline's
     # own output; if nothing collides, the original is used unchanged.
-    reserved = pcgr_reserved_info_tags(refdata_dir, genome_assembly)
-    stripped_vcf = os.path.join(output_dir, f"{sample_id}.pcgr_ready.vcf")
-    removed = strip_reserved_info_tags(input_vcf, stripped_vcf, reserved,
-                                       dry_run=dry_run)
-    if removed:
-        input_vcf = stripped_vcf
+    if input_vcf:
+        reserved = pcgr_reserved_info_tags(refdata_dir, genome_assembly)
+        stripped_vcf = os.path.join(output_dir, f"{sample_id}.pcgr_ready.vcf")
+        removed = strip_reserved_info_tags(input_vcf, stripped_vcf, reserved,
+                                           dry_run=dry_run)
+        if removed:
+            input_vcf = stripped_vcf
 
     cmd = build_pcgr_command(
         input_vcf=input_vcf,
@@ -813,12 +882,14 @@ def run_pcgr(input_vcf, output_dir, sample_id, refdata_dir, vep_dir=None,
         control_dp_tag=control_dp_tag,
         control_af_tag=control_af_tag,
         legacy_v1=legacy_v1,
+        rna_fusion=rna_fusion,
+        fusion_min_split_reads=fusion_min_split_reads,
         extra_args=extra_args,
     )
 
     # Loud warning rather than a silent bad number: without depth/AF tags
     # PCGR's TMB is computed over unfiltered calls.
-    if not (tumour_dp_tag or tumour_af_tag):
+    if input_vcf and not (tumour_dp_tag or tumour_af_tag):
         print("[WARN] No --tumor-dp-tag/--tumor-af-tag supplied. PCGR cannot "
               "apply depth/AF filters, so TMB in the report will be computed "
               "over unfiltered calls and will read high. Treat TMB and MSI "
@@ -861,9 +932,24 @@ def build_parser():
     )
 
     io = parser.add_argument_group("input / output")
-    io.add_argument("--input-vcf", required=True,
+    # No longer required. PCGR 2.x needs at least ONE molecular input and a
+    # fusion table is one, so an RNA-only run produces a real clinical
+    # report rather than only a table. validate_inputs() enforces the "at
+    # least one" rule in this script's own vocabulary.
+    io.add_argument("--input-vcf", default=None,
                     help="Somatic VCF to report on (the FilterMutectCalls "
-                         "or COSMIC-annotated output).")
+                         "or COSMIC-annotated output). Optional: a report "
+                         "may be built from --input-rna-fusion alone, or "
+                         "from both together, which is how the DNA and RNA "
+                         "libraries of one specimen are reported as one "
+                         "result.")
+    io.add_argument("--input-rna-fusion", default=None, metavar="TSV",
+                    help="RNA fusions in PCGR's schema (FusionGene, "
+                         "LeftBreakpoint, RightBreakpoint, SplitReads). "
+                         "fusion_calling.py writes one per sample as "
+                         "<sample>.pcgr_fusions.tsv. No VEP cache is needed "
+                         "for a fusion-only report -- there is no VCF to "
+                         "annotate.")
     io.add_argument("--output-dir", required=True,
                     help="Directory for the PCGR report.")
     io.add_argument("--sample-id", required=True,
@@ -909,6 +995,12 @@ def build_parser():
                           "APOBEC). OFF in PCGR by default. Wants a few "
                           "hundred SNVs at minimum; a small panel will not "
                           "give a trustworthy fit.")
+    opt.add_argument("--fusion-min-split-reads", type=int, default=None,
+                     metavar="N",
+                     help="PCGR's own floor for how many split reads a "
+                          "fusion needs before it reaches the report "
+                          "(PCGR default 3, minimum 2). Left unset, PCGR "
+                          "applies its default without saying so.")
     opt.add_argument("--tumour-site", type=int, default=None,
                      help="PCGR tumour-site code (0 = unspecified). "
                           "Site-specific actionability depends on it; see "
@@ -953,24 +1045,132 @@ def build_parser():
                          "moves an option this wrapper does not model.")
     rt.add_argument("--dry-run", action="store_true",
                     help="Show the command without executing it.")
+
+    # --- Panel / assay profile ---
+    # The TMB denominator is the reason this group exists. PCGR assumes
+    # 34 Mb for a TARGETED assay unless it is told otherwise, and says
+    # nothing about having done so -- which on a 2 Mb panel is a TMB
+    # roughly 17x too low, printed in a clinical report as a number.
+    panel = parser.add_argument_group("panel / assay profile")
+    panel.add_argument("--panel", default=None, metavar="ID",
+                       help="Panel profile to take the assay type and the "
+                            "report's estimate settings from. Explicit "
+                            "flags win over the profile.")
+    panel.add_argument("--panel-bed", default=None, metavar="BED",
+                       help="The kit's target BED. Its merged footprint is "
+                            "measured and used as the TMB denominator when "
+                            "--effective-target-size-mb is not given, which "
+                            "is the only way that number is right for a "
+                            "panel PCGR has never heard of.")
+    panel.add_argument("--panel-file", action="append", default=[],
+                       metavar="JSON",
+                       help="Additional profile file or directory to load, "
+                            "repeatable.")
+    panel.add_argument("--list-panels", action="store_true",
+                       help="List every known panel profile and exit.")
+    panel.add_argument("--describe-panel", default=None, metavar="ID",
+                       help="Print everything a profile sets, and exit.")
     return parser
+
+
+def apply_panel(args, parser, argv):
+    """
+    Take the assay type, estimate toggles and TMB denominator from a panel.
+
+    The denominator is measured from --panel-bed rather than read from the
+    profile, for the same reason the pipeline measures it: the BED being
+    reported on accounts for the kit version, the genome build and
+    whatever the laboratory spiked in, and a published figure accounts for
+    none of those.
+    """
+    try:
+        import panel_profiles
+    except ImportError as exc:
+        if args.panel:
+            parser.error(f"--panel needs panel_profiles.py beside this "
+                         f"script, and it could not be imported ({exc}).")
+        return
+    explicit = set(panel_profiles.explicit_dests(parser, argv))
+
+    if args.panel:
+        try:
+            registry = panel_profiles.available_panels(
+                extra_files=args.panel_file,
+                warn=lambda msg: print(f"[WARN] {msg}"))
+            profile = panel_profiles.resolve_panel(args.panel, registry)
+            applied, overridden = panel_profiles.apply_profile(
+                args, profile, explicit,
+                only=panel_profiles.PCGR_SETTINGS,
+                rename=panel_profiles.PCGR_RENAME)
+        except panel_profiles.PanelError as exc:
+            parser.error(str(exc))
+            return
+        print()
+        print(panel_profiles.format_application(
+            profile, applied, overridden,
+            rename=panel_profiles.PCGR_RENAME))
+
+    if not args.panel_bed:
+        return
+    measured = panel_profiles.footprint_mb(args.panel_bed)
+    if measured is None:
+        print(f"[WARN] could not measure a target footprint from "
+              f"{args.panel_bed}; PCGR will use its assumed default, which "
+              f"is exome-sized.")
+        return
+    nominal = None
+    if args.panel:
+        nominal = (panel_profiles.resolve_panel(
+            args.panel,
+            panel_profiles.available_panels(extra_files=args.panel_file))
+            .get("nominal_target_size_mb"))
+    note = panel_profiles.target_size_note(measured, nominal)
+    if note:
+        print(f"[INFO] {note}")
+    if args.effective_target_size_mb is None and \
+            "effective_target_size_mb" not in explicit:
+        args.effective_target_size_mb = measured
+        print(f"[INFO] TMB denominator set to the measured footprint "
+              f"({measured:.3f} Mb).")
+    advice = panel_profiles.tmb_advice(measured, args.estimate_tmb)
+    if advice:
+        print(f"[WARN] {advice}")
 
 
 def main():
     """Standalone entry point."""
+    # --list-panels / --describe-panel answer without --input-vcf and the
+    # other required arguments, which argparse cannot express, so they are
+    # handled before the real parser runs.
+    try:
+        import panel_profiles
+        panel_profiles.handle_panel_queries()
+    except ImportError:
+        pass
+
     parser = build_parser()
     args = parser.parse_args()
+    apply_panel(args, parser, sys.argv[1:])
+
+    if not args.input_vcf and not args.input_rna_fusion:
+        parser.error(
+            "give --input-vcf, --input-rna-fusion, or both. PCGR needs at "
+            "least one molecular input; it does not need a VCF specifically, "
+            "so an RNA-only run is a supported report rather than a "
+            "workaround.")
 
     extra = shlex.split(args.pcgr_extra_args) if args.pcgr_extra_args else None
 
-    input_vcf = os.path.abspath(args.input_vcf)
+    input_vcf = os.path.abspath(args.input_vcf) if args.input_vcf else None
     dp_tag, af_tag = args.tumor_dp_tag, args.tumor_af_tag
     control_dp, control_af = args.control_dp_tag, args.control_af_tag
 
     # Optional FORMAT -> INFO transform. On success PCGR is pointed at the
     # rewritten VCF and the tag names are filled in automatically, so the
     # user does not have to repeat them.
-    if args.lift_tags:
+    # The FORMAT->INFO lift is about a VCF's depth and allele-fraction
+    # fields; there is nothing to lift on a fusion-only run.
+    if args.lift_tags and input_vcf:
         lifted = os.path.join(os.path.abspath(args.output_dir),
                               f"{args.sample_id}.pcgr_input.vcf")
         stats = lift_format_to_info(
@@ -1013,6 +1213,9 @@ def main():
         control_dp_tag=control_dp,
         control_af_tag=control_af,
         legacy_v1=args.pcgr_legacy_v1,
+        rna_fusion=(os.path.abspath(args.input_rna_fusion)
+                    if args.input_rna_fusion else None),
+        fusion_min_split_reads=args.fusion_min_split_reads,
         extra_args=extra,
         log_path=args.log,
         dry_run=args.dry_run,

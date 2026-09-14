@@ -66,7 +66,7 @@
 <table class="grid">
   <thead>
     <tr>
-      <th>Started</th><th>Patient / specimen</th><th>Sample</th>
+      <th>Started</th><th>Assay</th><th>Patient / specimen</th><th>Sample</th>
       <th>Status</th><th>Progress</th><th></th>
     </tr>
   </thead>
@@ -74,6 +74,10 @@
   {% for j in jobs %}
     <tr>
       <td class="mono small">{{ (j.started or '')[:19].replace('T',' ') or '&mdash;'|safe }}</td>
+      {# Which pipeline produced this run. A list mixing DNA and RNA runs
+         with no column saying which is a list where two runs of the same
+         specimen look like a duplicate. #}
+      <td class="small">{{ 'RNA' if j.assay == 'rna' else 'DNA' }}</td>
       <td>{{ j.patient_id or '—' }}</td>
       <td class="mono small">{{ j.sample or '—' }}</td>
       <td><span class="status {{ j.status }}">{{ j.status }}</span></td>

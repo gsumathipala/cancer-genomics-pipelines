@@ -4,14 +4,24 @@
 .TH CANCER\-DNA\-PIPELINE 1 "2026-09-07" "cancer\-dna\-pipeline" "User Commands"
 .
 .SH NAME
-cancer\-dna\-pipeline \- somatic variant calling for Illumina NextSeq 1000 cancer DNA
+cancer\-dna\-pipeline \- somatic variant and fusion calling for Illumina cancer panels
 .PP
+DNA branch:
 .BR fastq_qc_clean.py ,
 .BR align_reads.py ,
 .BR comprehensive_variant_calling.py ,
-.BR pipeline_orchestrator.py ,
 .BR pcgr_report.py ,
-.BR coverage_report.py ,
+.BR coverage_report.py
+.PP
+RNA branch:
+.BR align_rna.py ,
+.BR fusion_calling.py ,
+.BR rna_qc_report.py ,
+.BR fusion_report.py
+.PP
+Shared:
+.BR pipeline_orchestrator.py ,
+.BR panel_profiles.py ,
 .B check_db_updates.py
 .
 .SH SYNOPSIS
@@ -387,6 +397,72 @@ option listed for
 .BR align_reads.py .
 Options unique to it:
 .TP
+.BI \-\-panel " ID"
+Configure the run from a panel profile instead of setting nine flags by
+hand. The profile chooses interval padding, the allele\-fraction and depth
+floors, whether duplicate marking and BQSR are meaningful for that
+chemistry, the UMI layout, and which report statistics the target is large
+enough to support \(em each of which is silent when it is wrong. Explicit
+flags always win over the profile, and what it applied is printed at the
+start of the run and recorded in the manifest. Profiles ship for Illumina,
+Thermo Fisher, Agilent, Twist, IDT, QIAGEN, Archer and Roche kits, plus
+generic shapes
+.RB ( generic\-capture ", " generic\-amplicon ", " generic\-hotspot ", "
+.BR ctdna\-capture ", " wes ", " wgs )
+for anything not listed. See
+.B \-\-list\-panels
+and PANELS.md.
+.TP
+.BI \-\-panel\-bed " BED"
+The kit's target BED, used for
+.I both
+.B \-\-intervals
+and
+.BR \-\-coverage\-bed .
+They are the same file in all but unusual laboratories, and filling only one
+of them leaves a run that either calls genome\-wide or makes no coverage
+statement. No profile ships a BED: vendor BEDs are licensed,
+version\-specific content that comes with the kit. Once a BED is known, its
+footprint is measured and used as the TMB denominator (PCGR otherwise
+assumes 34\ Mb, so a 2\ Mb panel reports a TMB roughly 17x too low), and its
+contig naming is checked against the reference \(em an Ensembl\-style BED
+.RB ( 1 ", " MT )
+is called over a renamed copy written into
+.IR <output\-dir>/panel/ ,
+rather than making the coverage report state that none of the panel was
+covered.
+.TP
+.BI \-\-panel\-file " JSON"
+Additional profile file or directory, repeatable. Profiles are also picked
+up automatically from
+.I ~/.config/cancer_pipeline/panels
+and
+.BR $CANCER_PIPELINE_PANEL_DIR .
+A profile whose id matches a built\-in replaces it.
+.TP
+.B \-\-list\-panels
+.TQ
+.BI \-\-describe\-panel " ID"
+.TQ
+.BI \-\-new\-panel\-template " JSON"
+List every known profile, print one in full with its caveats, or write a
+starting point for a kit that is not built in. Each answers and exits, and
+none needs
+.BR \-o / \-r .
+.TP
+.BI \-\-save\-panel\-as " JSON"
+.TQ
+.BI \-\-panel\-id " ID"
+After the settings are resolved, save them as a reusable profile. The
+intended workflow is to tune a run with ordinary flags under
+.B \-\-dry\-run
+until it is right, then save it. Paths are deliberately not stored.
+.TP
+.BI \-\-mutect2\-extra\-args " STRING"
+Extra arguments forwarded verbatim to Mutect2, appended last so they
+override what the pipeline built. The escape hatch for a chemistry that
+needs a caller setting this script has no flag for.
+.TP
 .BI \-\-r1\-pattern " GLOB"
 .TQ
 .BI \-\-r2\-pattern " GLOB"
@@ -733,6 +809,28 @@ yourself. Unnecessary with
 As above;
 .B \-\-log
 appends command output to a file.
+.TP
+.BI \-\-panel " ID"
+.TQ
+.BI \-\-panel\-bed " BED"
+.TQ
+.BI \-\-panel\-file " JSON"
+.TQ
+.B \-\-list\-panels
+.TQ
+.BI \-\-describe\-panel " ID"
+Take the assay type and the estimate toggles from a panel profile, and
+measure the TMB denominator from the target BED.
+.B \-\-panel\-bed
+is the one that matters most: PCGR assumes 34\ Mb for a
+.B TARGETED
+assay unless told otherwise and says nothing about having done so, which on
+a 2\ Mb panel is a TMB roughly 17x too low printed in a clinical report as a
+number. The measured footprint is used only when
+.B \-\-effective\-target\-size\-mb
+was not given, because a figure somebody typed \(em callable bases from a
+validation, say \(em beats a raw BED footprint. A profile's nominal size is
+compared against the measurement and a disagreement is reported.
 .PP
 Exit status is three\-valued here:
 .B 0
@@ -778,6 +876,23 @@ each.
 Print the
 .BR samtools (1)
 command without running it.
+.TP
+.BI \-\-panel " ID"
+.TQ
+.BI \-\-panel\-file " JSON"
+.TQ
+.B \-\-list\-panels
+.TQ
+.BI \-\-describe\-panel " ID"
+Take the depth, mapping\-quality and base\-quality floors from a panel
+profile. The threshold a base must reach to count as covered is an assay
+property rather than a universal one \(em a hotspot panel sequenced to 2000x
+and an exome sequenced to 100x cannot share one, and the wrong value makes
+this report either fail everything or pass everything. This tool's
+.B \-\-min\-depth
+.I is
+the coverage threshold, so a profile that sets only the pipeline's call\-depth
+floor supplies it here too, exactly as the pipeline's own coverage step does.
 .PP
 Exit status is
 .B 0
@@ -786,6 +901,164 @@ when a report was written and
 when it could not be \(em no samtools, no BAM, an unreadable BED. The pipeline
 treats the latter as a warning: the calls are already on disk, and a missing
 coverage statement is a caveat on them, not a reason to discard them.
+.
+.SS align_rna.py \(em RNA alignment (STAR)
+Stage 2 of the RNA branch.
+.B bwa\-mem2 cannot align RNA:
+a read crossing an exon\-exon junction has no contiguous genomic match, so it
+is soft\-clipped back to one exon or discarded \(em silently, and those are
+exactly the reads that could evidence a fusion. This aligns with STAR, with
+chimeric detection configured explicitly, because STAR does not look for
+chimeric alignments by default and a fusion caller handed a default STAR BAM
+returns a clean, empty, entirely wrong table.
+.TP
+.B \-\-build\-index
+Build the STAR index and exit. About an hour, ~32\ GB RAM, ~30\ GB disk, once
+per genome, annotation and read length. Needs
+.BR \-\-reference ", " \-\-gtf " and " \-\-read\-length .
+.TP
+.BI \-\-star\-index " DIR"
+The index directory. Omitted along with
+.BR \-\-read\-length ,
+an installed index is DISCOVERED under
+.B \-\-reference\-dir
+rather than guessed: one is used and named, several are listed so you can
+be explicit. Shared between runs like the bwa\-mem2 index, so it
+belongs under
+.B \-\-reference\-dir
+rather than in an output directory. The index bakes in the ANNOTATION and the
+READ LENGTH; this script records both when it builds one and warns when a
+later run's differ, because an index built for 100\ bp reads works on
+150\ bp reads and quietly loses junction sensitivity.
+.TP
+.BI \-\-gtf " FILE"
+GENCODE annotation. Use the primary\-assembly GTF: it names contigs the UCSC
+way
+.RB ( chr1 ", " chrM ),
+matching the installed hg38. An Ensembl GTF
+.RB ( 1 ", " MT )
+builds an index over nothing.
+.TP
+.BI \-\-read\-length " N"
+Library read length. Sets STAR's
+.B \-\-sjdbOverhang
+(read length minus one) when building, and is checked against the index's
+build record when aligning.
+.TP
+.B \-\-sorted\-bam
+Also write a coordinate\-sorted, indexed copy. The fusion caller wants the
+UNSORTED BAM \(em it reads mates together \(em so this is for QC, IGV and
+anything needing random access.
+.TP
+.BI \-\-star\-extra\-args " STRING"
+Forwarded verbatim to STAR, appended after the chimeric\-detection block so
+they override it.
+.
+.SS fusion_calling.py \(em the RNA engine
+Six steps: QC, splice\-aware alignment, coordinate sorting, fusion calling
+(Arriba), RNA library QC, fusion report. Accepts
+.BR \-i ", " \-o ", " \-\-manifest ", " \-\-auto\-discover ", "
+.BR \-\-threads ", " \-\-skip\-steps " and " \-\-dry\-run
+with the same meanings as the DNA engine, and every
+.B align_rna.py
+reference option above. Unlike the DNA engine's
+.BR \-\-auto\-discover ,
+every pair found is processed as its own sample: a fusion is called from one
+library, so there is no tumour/normal pairing and none of the ambiguity that
+comes with it.
+.TP
+.BI \-\-panel " ID"
+An RNA panel profile. The engine REFUSES a DNA profile by name rather than
+running with settings \(em duplicate marking, allele\-fraction floors, target
+BEDs \(em that have no meaning here.
+.B \-\-list\-panels
+marks RNA profiles
+.BR [RNA] .
+.TP
+.BI \-\-fusion\-min\-confidence " low|medium|high"
+The bar at which a call counts as reportable. Calls below it are MARKED,
+never dropped: a laboratory investigating a clinically expected fusion needs
+to see that it was called weakly rather than be told nothing was found.
+.TP
+.BI \-\-arriba\-resources " DIR"
+Arriba's blacklist, known\-fusion and protein\-domain files. Found inside the
+conda environment automatically; supply this only when that fails.
+.B Without the blacklist
+recurrent read\-through artefacts are reported as high\-confidence fusions and
+the table fills with noise.
+.TP
+.BI \-\-rna\-min\-reads\-millions " N"
+.TQ
+.BI \-\-rna\-min\-unique\-mapped\-pct " N"
+The floors the library\-QC verdict is measured against. They differ by an
+order of magnitude between chemistries: 2\ M reads is a normal, adequate
+anchored\-PCR library and a badly failed whole transcriptome, which is why
+they come from the panel profile.
+.PP
+No duplicate marking, and no flag to enable it. Two reads at one position in
+a highly expressed gene are two observations of an abundant transcript, not
+one molecule counted twice.
+.
+.SS rna_qc_report.py \(em RNA library QC (standalone)
+Answers the question an empty fusion table cannot:
+.B a degraded FFPE RNA extraction produces a clean, well\-formed, empty
+.B fusion table, indistinguishable from a specimen carrying no fusion.
+Measures input reads, unique mapping, reads lost as \(lqtoo short\(rq, the
+mitochondrial and rRNA fractions, and junction and chimeric counts \(em from
+STAR's own log, samtools and the GTF, needing nothing else installed \(em and
+ends with a sentence about reportability rather than a table of numbers.
+.TP
+.BI \-\-star\-log " FILE"
+.TQ
+.BI \-\-bam " FILE"
+.TQ
+.BI \-\-gtf " FILE"
+STAR's Log.final.out, the coordinate\-sorted indexed BAM, and the annotation
+(used to derive rRNA intervals). Each is optional; what cannot be measured is
+listed by name in the report so its absence is not read as a pass.
+.PP
+Duplication rate is never reported. On RNA it is not a quality metric: an
+abundant transcript produces identical reads legitimately. DV200/RIN is never
+computed either \(em it is an instrument measurement of the extracted RNA,
+it cannot be recovered from FASTQ, and it is the best single predictor of
+whether fusion detection could work at all.
+.
+.SS fusion_report.py \(em fusion ranking (standalone)
+Reorders the caller's table by CLINICAL SALIENCE rather than by the caller's
+own confidence, which is a statement about evidence: a high\-confidence
+read\-through between two housekeeping genes otherwise sorts above a
+medium\-confidence EML4\-ALK.
+.TP
+.BI \-\-fusions " TSV"
+.TQ
+.BI \-\-min\-confidence " low|medium|high"
+The caller's table, and the reportability bar. Everything is shown; calls
+below the bar are marked.
+.PP
+Same\-gene events are labelled separately.
+.B MET exon 14 skipping
+is one of the most actionable findings a lung panel produces, it is a splice
+event within one gene rather than a fusion between two, and in a table sorted
+by gene pair it reads as
+.B MET\-\-MET
+and is trivially missed.
+.PP
+The actionable\-gene list is a highlighting aid, not a knowledge base: it does
+not claim a marked fusion is actionable in this tumour type, nor that an
+unmarked one is unimportant. For a tiered interpretation, this step also
+writes
+.IR <sample>.pcgr_fusions.tsv ,
+which
+.B pcgr_report.py \-\-input\-rna\-fusion
+reads.
+.PP
+PCGR 2.x takes RNA fusions as a molecular input in their own right and needs
+a somatic VCF only if one is given, so
+.B \-\-input\-vcf
+is optional: fusions alone produce a report (and need no VEP cache, there
+being nothing to annotate), and fusions WITH the matching DNA library's VCF
+produce one report covering the whole specimen. PCGR rejects an EMPTY fusion
+file, so a run that found nothing writes no input and says why.
 .
 .SS pipeline_orchestrator.py \(em stage chaining
 .TP
@@ -839,6 +1112,35 @@ Print each stage command without running it.
 Where the orchestrator writes its JSON report. Default:
 .IR pipeline_logs .
 .
+.TP
+.BI \-\-assay " dna|rna"
+Which stage 3 to run.
+.B dna
+chains comprehensive_variant_calling.py;
+.B rna
+chains fusion_calling.py and
+.I forces
+.B \-\-skip\-stage2 .
+That is not an optimisation: bwa\-mem2 cannot align across an exon\-exon
+junction, so stage 2 would discard exactly the reads a fusion is evidenced
+by, and the resulting BAM looks ordinary.
+.TP
+.BI \-\-panel " ID"
+.TQ
+.BI \-\-panel\-bed " BED"
+DNA only \(em under
+.B \-\-assay rna
+it is ignored with a warning, because an RNA run is scoped by its
+annotation and fusion_calling.py has no such option. Appended to
+.B \-\-stage1\-args
+and
+.B \-\-stage3\-args
+(stage 2 has no panel\-dependent settings), unless those already name a panel
+of their own. Both stages must be given the
+.I same
+profile: a chain whose QC extracted a UMI and whose caller was configured
+for a different chemistry is half\-configured, and the half that is wrong is
+silent.
 .SH PIPELINE STAGES
 .B comprehensive_variant_calling.py
 runs fourteen steps. The names accepted by
@@ -1212,6 +1514,46 @@ requires none of these tools to be installed.
 .
 .SH CAVEATS
 .TP
+.B The RNA branch has no validation at all
+It is newer than everything else here and has no truth set: no fusion call it
+produces has been checked against FISH, RT\-PCR or a second caller. For
+anchored\-PCR panels (Archer, Oncomine) the vendor's own caller is the
+validated route \(em Arriba and STAR\-Fusion were developed on capture and
+whole\-transcriptome libraries, and their assumptions about read distribution
+do not hold on AMP data. See RNA_SCOPE.md.
+.TP
+.B An empty fusion table is not a negative result
+Not until the library has been shown adequate. This is the RNA counterpart of
+the DNA branch's coverage problem and it is worse, because it is library\-wide
+rather than regional. Read the RNA QC report first; it is written before the
+fusion report for exactly this reason.
+.TP
+.B A panel profile is not a validation
+The built\-in profiles encode published, nominal figures for one version of
+each kit, and conventional rather than measured thresholds. Kits are
+revised, laboratories spike in extra content, and a limit of detection
+belongs to your validation rather than to a catalogue number. Copy the
+closest profile, adjust it to your assay, and keep the copy.
+.TP
+.B Amplicon chemistry disables duplicate marking, and must
+Amplicon reads begin and end at primer coordinates by construction, so
+every read from one amplicon looks like a duplicate of every other. With
+the step left on, MarkDuplicates flags nearly the whole library and Mutect2
+\(em which ignores duplicate\-flagged reads \(em then calls from what little
+survived. The amplicon profiles skip it; a run configured by hand must.
+.TP
+.B UMIs are extracted, not collapsed
+fastp moves a UMI into the read name. Nothing here builds consensus or
+duplex reads: there is no fgbio step. A kit sold for 0.1% ctDNA detection
+will not reach 0.1% here, which is why
+.B ctdna\-capture
+sets a floor of 0.5% rather than the kit's specification.
+.TP
+.B Ion Torrent data is configured for, not validated on
+The Thermo profiles set what can be set, but the QC, alignment and
+filtering defaults throughout were tuned on Illumina paired\-end reads and
+the homopolymer indel error profile differs.
+.TP
 .B \-\-merge\-lanes means different things per tool
 In
 .B fastq_qc_clean.py
@@ -1354,9 +1696,15 @@ set rather than the SnpEff output.
 .BR fastp (1),
 .BR fastqc (1),
 .BR bwa\-mem2 (1),
+.BR STAR (1),
+.BR arriba (1),
 .BR samtools (1),
 .BR bcftools (1),
 .BR multiqc (1)
+.PP
+In this bundle: PANELS.md (panel profiles), RNA.md (the RNA branch),
+RNA_SCOPE.md and CNV_SCOPE.md (what is deliberately not built),
+DATABASE_SETUP.md, install.md.
 .PP
 GATK documentation:
 .UR https://gatk.broadinstitute.org

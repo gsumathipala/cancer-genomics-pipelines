@@ -46,6 +46,11 @@ captured one as deleted.
 
 **Normal samples sequenced on this assay, in this lab.**
 
+*(On "this assay": `--panel` records which one a run used, in the run manifest
+and in the report — see [PANELS.md](PANELS.md). A read-count panel of normals
+is only valid for the assay it was built from, so being able to say which
+assay a BAM came from is a prerequisite for building one at all.)*
+
 | Requirement | Why |
 |---|---|
 | **10 minimum, 30–40 preferred** | GATK denoises by PCA over the count matrix; too few normals and the principal components fit noise |

@@ -115,6 +115,51 @@
   </section>
 
   <section class="card">
+    <h2>Assay / panel</h2>
+    <p class="hint">Pick the kit and the run is configured for its
+      chemistry in one step: interval padding, the allele-fraction and depth
+      floors, whether duplicate marking is meaningful for this library, the
+      UMI layout, and which report statistics the panel is large enough to
+      support. Every one of those is silent when it is wrong &mdash; a run
+      with duplicate marking left on for an amplicon panel finishes
+      normally and calls from a fraction of its real depth. Anything you
+      fill in yourself below still wins over the profile.
+      <a href="{{ url_for('panels_page') }}">What each profile sets</a>.</p>
+    <div class="fields">
+      <label><span>Panel profile</span>
+        <select name="panel" id="panel-select">
+          <option value="">&mdash; none (use the settings below as-is) &mdash;</option>
+          {% set ns = namespace(vendor='') %}
+          {% for p in (panels or []) %}
+            {% if p.manufacturer != ns.vendor %}
+              {% if ns.vendor %}</optgroup>{% endif %}
+              {% set ns.vendor = p.manufacturer %}
+              <optgroup label="{{ 'Generic (any manufacturer)' if p.manufacturer == 'any' else p.manufacturer }}">
+            {% endif %}
+            <option value="{{ p.id }}"
+              {% if (form or {}).get('panel') == p.id %}selected{% endif %}>
+              {{ p.name }}{% if p.nominal_target_size_mb %} &middot; ~{{ p.nominal_target_size_mb }} Mb{% endif %}</option>
+          {% endfor %}
+          {% if ns.vendor %}</optgroup>{% endif %}
+        </select></label>
+      <label><span>Panel BED (target regions)</span>
+        <input name="panel_bed" id="panel-bed"
+               value="{{ (form or {}).get('panel_bed','') }}"
+               placeholder="/data/panels/kit_targets.bed"></label>
+    </div>
+    <p class="hint">The panel BED fills both <em>target intervals</em> and
+      <em>coverage BED</em> below, which are the same file in all but
+      unusual laboratories &mdash; filling only one of them is how a run
+      ends up either calling genome-wide or making no coverage statement at
+      all. No profile ships a BED: vendor BEDs are licensed,
+      version-specific content that has to come from your kit. If its
+      contigs are named the Ensembl way (<code>1</code>, <code>MT</code>)
+      the run detects that and calls over a renamed copy rather than
+      failing.</p>
+    <div id="panel-preview" class="hint" hidden></div>
+  </section>
+
+  <section class="card">
     <h2>Resources</h2>
     <div class="fields">
       <label><span>COSMIC VCF</span><input name="cosmic" value="{{ (form or {}).get('cosmic') or (defaults or {}).get('cosmic','') }}"></label>
@@ -255,5 +300,100 @@
     <a href="{{ url_for('index') }}">Cancel</a>
   </div>
 </form>
+
+<script>
+// Live preview of a panel choice. This fills the visible fields so the
+// operator can see -- and change -- what the profile implies before
+// starting a run.
+//
+// It is NOT how the settings are applied. The server applies them again in
+// apply_panel_to_form(), because a value that only ever existed in the
+// browser goes missing the moment somebody posts from a script, leaves a
+// page open while a profile changes, or has JavaScript turned off. This is
+// the same reason the resource paths are re-applied server-side.
+(function () {
+  var PANELS = {{ panel_settings|default('{}')|safe }};
+  var select = document.getElementById('panel-select');
+  var bed = document.getElementById('panel-bed');
+  var preview = document.getElementById('panel-preview');
+  if (!select || !preview) { return; }
+
+  // Only the fields this form actually shows. A profile carries more than
+  // this (UMI layout, adapters, caller passthroughs); those are applied by
+  // the pipeline itself from --panel, and are listed in the preview text
+  // so nothing is applied invisibly.
+  var FIELDS = ['interval_padding', 'min_depth', 'min_allele_fraction',
+                'coverage_min_depth', 'pcgr_assay', 'pcgr_target_size_mb'];
+  var TOGGLES = ['pcgr_estimate_tmb', 'pcgr_estimate_msi',
+                 'pcgr_estimate_signatures'];
+
+  function field(name) {
+    return document.querySelector('[name="' + name + '"]');
+  }
+
+  function apply() {
+    var chosen = PANELS[select.value];
+    if (!chosen) { preview.hidden = true; preview.textContent = ''; return; }
+    var settings = chosen.settings || {};
+
+    FIELDS.forEach(function (name) {
+      var input = field(name);
+      if (input && settings[name] !== undefined && settings[name] !== null) {
+        input.value = settings[name];
+      }
+    });
+    TOGGLES.forEach(function (name) {
+      var input = field(name);
+      // Booleans are set in both directions here, unlike on the server:
+      // the operator is looking at the box and can put it back.
+      if (input && typeof settings[name] === 'boolean') {
+        input.checked = settings[name];
+      }
+    });
+    if (Array.isArray(settings.skip_steps)) {
+      var skip = field('skip_steps');
+      if (skip) {
+        var have = skip.value.split(/\s+/).filter(Boolean);
+        settings.skip_steps.forEach(function (step) {
+          if (have.indexOf(step) === -1) { have.push(step); }
+        });
+        skip.value = have.join(' ');
+      }
+    }
+    // One BED, two fields.
+    if (bed && bed.value) {
+      ['intervals', 'coverage_bed'].forEach(function (name) {
+        var input = field(name);
+        if (input && !input.value) { input.value = bed.value; }
+      });
+    }
+
+    // Built as text nodes, not as an HTML string. Profile text can come
+    // from a JSON file somebody at the site wrote, and a summary
+    // containing a stray angle bracket should render as an angle bracket
+    // rather than as markup.
+    preview.textContent = '';
+    var head = document.createElement('strong');
+    head.textContent = chosen.summary || '';
+    preview.appendChild(head);
+    var lines = [];
+    if ((chosen.requires || []).length) {
+      lines.push('You must still supply: ' + chosen.requires.join('; ') + '.');
+    }
+    (chosen.notes || []).forEach(function (note) {
+      lines.push('\u2022 ' + note);
+    });
+    lines.forEach(function (text) {
+      preview.appendChild(document.createElement('br'));
+      preview.appendChild(document.createTextNode(text));
+    });
+    preview.hidden = false;
+  }
+
+  select.addEventListener('change', apply);
+  if (bed) { bed.addEventListener('change', apply); }
+  if (select.value) { apply(); }
+})();
+</script>
 
 {% endblock %}

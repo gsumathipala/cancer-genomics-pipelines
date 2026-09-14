@@ -47,6 +47,13 @@ PATIENT_FIELDS = [
     ("specimen_type", "Specimen type"),
     ("collection_date", "Collection date"),
     ("referring_clinician", "Referring clinician"),
+    # RNA quality, as measured on the extracted nucleic acid before
+    # sequencing. It sits with the patient fields because it is a wet-lab
+    # observation the operator types in, not something any script can
+    # compute -- and on an RNA fusion run it is the single best predictor
+    # of whether a negative result means anything at all. Blank on a DNA
+    # run, and blank is the honest answer there.
+    ("rna_quality", "RNA quality (DV200 / RIN)"),
     ("notes", "Notes"),
 ]
 
@@ -163,6 +170,37 @@ def read_pcgr_variants(tsv_paths, limit=40):
     return None, [], None
 
 
+def panel_description(manifest, run):
+    """
+    One line naming the assay, for the provenance table.
+
+    Prefers the pipeline manifest, which records the profile as data, and
+    falls back to the web form's own record for a run started before the
+    manifest carried one.
+    """
+    profile = (manifest.get("panel_profile") or {}).get("panel")
+    if profile:
+        chemistry = profile.get("chemistry")
+        label = f"{profile.get('name')} [{profile.get('id')}]"
+        return f"{label} -- {chemistry}" if chemistry else label
+    return run.get("panel_label") or None
+
+
+def panel_notes(manifest):
+    """
+    The caveats the profile attached to this assay, plus what the run
+    observed about its own target.
+
+    Returns [] when no panel was named, which is the common case for a run
+    configured entirely by hand -- the report then simply carries the
+    general limitations.
+    """
+    record = manifest.get("panel_profile") or {}
+    notes = list((record.get("panel") or {}).get("notes") or [])
+    notes += [n for n in (record.get("notes") or []) if n not in notes]
+    return notes
+
+
 def summarise_run(manifest):
     """Condense the pipeline manifest into printable key/value rows."""
     stats = manifest.get("vcf_stats") or {}
@@ -251,7 +289,15 @@ def build_report(patient, run, output_dir, pdf_path):
         ("Tumour site", params.get("pcgr_tumour_site_label")
          or ("not specified" if not params.get("pcgr_tumour_site")
              else params.get("pcgr_tumour_site"))),
+        # Which assay this is, first among the target-related rows: a
+        # reader looking at a TMB or a VAF needs to know what produced it
+        # before they read the number. The panel is taken from the
+        # manifest's own record rather than from the run form, so the
+        # report describes what the pipeline actually ran with.
+        ("Assay / panel", panel_description(manifest, run)),
         ("Target intervals", params.get("intervals")),
+        ("Target footprint measured (Mb)",
+         (manifest.get("panel_profile") or {}).get("target_size_mb_measured")),
         ("Minimum depth", params.get("min_depth")),
         ("Panel size for TMB (Mb)", params.get("pcgr_target_size_mb")),
         ("Pipeline started", manifest.get("started_utc") or run.get("started")),
@@ -386,6 +432,15 @@ def build_report(patient, run, output_dir, pdf_path):
         "step found them.",
     ):
         doc.paragraph("- " + line, size=9)
+
+    # Whatever the panel profile wanted the reader of THIS assay's results
+    # to know -- that duplicate marking is off for amplicon chemistry, that
+    # UMIs were extracted but not collapsed into consensus reads, that the
+    # footprint is too small for a reportable TMB. They are carried in the
+    # run manifest precisely so they reach the printed report rather than
+    # living in a log nobody opens.
+    for note in panel_notes(manifest):
+        doc.paragraph("- " + note, size=9)
 
     doc.save(pdf_path)
     return {

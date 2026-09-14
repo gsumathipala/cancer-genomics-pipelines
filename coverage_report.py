@@ -469,7 +469,67 @@ def run_coverage_check(bam, bed, sample_id, output_dir, min_depth,
     return result
 
 
+def apply_panel(args, parser, argv):
+    """
+    Take the coverage thresholds from --panel, for anything not given.
+
+    Two wrinkles the pipeline does not have, both handled here rather than
+    in the shared code, because they are properties of THIS tool's
+    vocabulary:
+
+      * this tool's --min-depth IS the coverage threshold, whereas the
+        pipeline has both a call-depth floor (--min-depth) and a separate
+        coverage threshold (--coverage-min-depth). A profile that sets only
+        the former therefore supplies this one too -- exactly the fallback
+        the pipeline's own coverage step applies.
+      * the flags drop the "coverage_" prefix, so the profile keys are
+        mapped onto them.
+    """
+    if not args.panel:
+        return
+    try:
+        import panel_profiles
+    except ImportError as exc:
+        parser.error(f"--panel needs panel_profiles.py beside this script, "
+                     f"and it could not be imported ({exc}).")
+        return
+    try:
+        registry = panel_profiles.available_panels(
+            extra_files=args.panel_file,
+            warn=lambda msg: print(f"[WARN] {msg}"))
+        profile = panel_profiles.resolve_panel(args.panel, registry)
+
+        # A copy, so the fallback below cannot write into the registry and
+        # change what a later --describe-panel prints.
+        view = dict(profile)
+        settings = dict(view.get("settings") or {})
+        if settings.get("coverage_min_depth") is None and \
+                settings.get("min_depth") is not None:
+            settings["coverage_min_depth"] = settings["min_depth"]
+        view["settings"] = settings
+
+        applied, overridden = panel_profiles.apply_profile(
+            args, view, panel_profiles.explicit_dests(parser, argv),
+            only=panel_profiles.COVERAGE_SETTINGS,
+            rename=panel_profiles.COVERAGE_RENAME)
+    except panel_profiles.PanelError as exc:
+        parser.error(str(exc))
+        return
+    print()
+    print(panel_profiles.format_application(
+        profile, applied, overridden,
+        rename=panel_profiles.COVERAGE_RENAME))
+
+
 def main():
+    # --list-panels / --describe-panel answer without --bam/--bed, which
+    # argparse cannot express, so they run before the real parser.
+    try:
+        import panel_profiles
+        panel_profiles.handle_panel_queries()
+    except ImportError:
+        pass
+
     parser = argparse.ArgumentParser(
         description="Report how much of a BED target the sequencing covered.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -494,7 +554,29 @@ def main():
                              "(default: 20).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the samtools command without running it.")
+
+    # --- Panel / assay profile ---
+    # The depth a base must reach to count as covered is an assay property,
+    # not a universal one: a hotspot panel sequenced to 2000x and an exome
+    # sequenced to 100x cannot share a threshold, and the wrong one makes
+    # this report either fail everything or pass everything. Naming the
+    # assay gets the same number the pipeline's own coverage step would
+    # have used.
+    panel = parser.add_argument_group("panel / assay profile")
+    panel.add_argument("--panel", default=None, metavar="ID",
+                       help="Panel profile to take the coverage thresholds "
+                            "from. Explicit flags win over the profile.")
+    panel.add_argument("--panel-file", action="append", default=[],
+                       metavar="JSON",
+                       help="Additional profile file or directory to load, "
+                            "repeatable.")
+    panel.add_argument("--list-panels", action="store_true",
+                       help="List every known panel profile and exit.")
+    panel.add_argument("--describe-panel", default=None, metavar="ID",
+                       help="Print everything a profile sets, and exit.")
+
     args = parser.parse_args()
+    apply_panel(args, parser, sys.argv[1:])
 
     result = run_coverage_check(
         args.bam, args.bed, args.sample_id, args.output_dir,

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Panel profiles &middot; Cancer DNA Pipeline{% endblock %}
+{% block content %}
+
+<h1>Panel profiles</h1>
+
+{% if not available %}
+<p class="hint warn">panel_profiles.py could not be imported from the
+  pipeline directory, so no profiles are available. Every setting a profile
+  carries is still an ordinary field on the new-run form.</p>
+{% endif %}
+
+<section class="card">
+  <p class="hint">A profile is the settings one kit needs, named once. It
+    chooses interval padding, the allele-fraction and depth floors, whether
+    duplicate marking and base recalibration are meaningful for that
+    chemistry, the UMI layout, and which report statistics the target is
+    large enough to support. Picking one on the
+    <a href="{{ url_for('new_run') }}">new-run form</a> applies all of it;
+    anything you fill in yourself still wins.</p>
+  <p class="hint">Profiles come in two kinds. A <strong>DNA</strong> profile
+    configures <code>comprehensive_variant_calling.py</code> and needs your
+    kit&rsquo;s target BED. An <strong>RNA</strong> profile configures
+    <code>fusion_calling.py</code> instead &mdash; a different pipeline, with
+    STAR and Arriba rather than bwa-mem2 and Mutect2 &mdash; and needs a
+    GENCODE annotation and a STAR index. The two forms
+    (<a href="{{ url_for('new_run') }}">DNA</a>,
+    <a href="{{ url_for('new_rna_run') }}">RNA</a>) each offer only their
+    own, and each refuses the other&rsquo;s.</p>
+  <p class="hint"><strong>No profile ships a target BED.</strong> Vendor
+    BEDs are licensed content that travels with the kit, they are specific
+    to a kit version and a genome build, and the wrong one is worse than
+    none &mdash; it looks like a target region and silently is not one. So
+    every profile names the BED as something you supply.</p>
+  <p class="hint"><strong>Built-ins are a starting point, not an
+    authority.</strong> They carry published figures for one version of
+    each kit. Kits are revised, laboratories spike in extra content, and a
+    validated limit of detection belongs to your validation rather than to
+    a catalogue number. To add your own, write a JSON profile into
+    <code>~/.config/cancer_pipeline/panels/</code> &mdash; one is written
+    for you by
+    <code>python comprehensive_variant_calling.py --new-panel-template
+    mine.json</code>. A profile whose id matches a built-in replaces it.</p>
+</section>
+
+{% for p in panels %}
+<section class="card">
+  <div class="statusline">
+    <h2 style="margin:0">{{ p.name }}</h2>
+    {# The assay type comes first because it decides which pipeline runs,
+       which scripts exist and which reference data is needed -- it is not
+       a refinement of the chemistry, it is the fork above it. #}
+    <span class="status {{ 'running' if p.chemistry.startswith('rna-') else 'finished' }}">
+      {{ 'RNA — fusions' if p.chemistry.startswith('rna-') else 'DNA — SNVs/indels' }}</span>
+    <span class="status queued">{{ p.chemistry }}</span>
+    {% if p.nominal_target_size_mb %}
+      <span class="small">nominal ~{{ p.nominal_target_size_mb }} Mb</span>
+    {% endif %}
+  </div>
+  <p class="hint">{{ p.summary }}<br>
+    <code>{{ p.id }}</code> &middot;
+    {{ 'any manufacturer' if p.manufacturer == 'any' else p.manufacturer }}</p>
+
+  {% set d = details.get(p.id, {}) %}
+  {% if d.get('settings') %}
+  <table class="grid">
+    <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+    <tbody>
+      {% for key, value in d['settings'].items() | sort %}
+        {% if value is not none %}
+        <tr>
+          <td class="small"><code>--{{ key.replace('_','-') }}</code></td>
+          <td class="small">
+            {%- if value is boolean %}{{ 'on' if value else 'off' }}
+            {%- elif value is iterable and value is not string %}{{ value | join(' ') }}
+            {%- else %}{{ value }}{% endif -%}
+          </td>
+        </tr>
+        {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if p.requires %}
+    <p class="hint"><strong>You must still supply:</strong>
+      {{ p.requires | join('; ') }}.</p>
+  {% endif %}
+  {% if p.notes %}
+    <p class="hint"><strong>Before you use this profile:</strong></p>
+    <ul class="hint">
+      {% for note in p.notes %}<li>{{ note }}</li>{% endfor %}
+    </ul>
+  {% endif %}
+</section>
+{% endfor %}
+
+{% endblock %}

@@ -264,6 +264,45 @@ report naming the stretches that fell short. Without the second one a capture
 dropout is indistinguishable from a wild-type region — both are simply absent
 from the VCF.
 
+The four options above are also what `--panel` sets for you, with the numbers
+matched to the kit's chemistry rather than to the example:
+
+```bash
+    --panel generic-capture --panel-bed /path/to/panel_targets.bed
+```
+
+`--panel-bed` fills both BED options, and the padding and depth floors come
+from the profile. On an **amplicon** kit those numbers are different and one
+of them is not a number at all — duplicate marking has to be switched off
+entirely, because amplicon reads share primer coordinates and MarkDuplicates
+would flag nearly the whole library. See [PANELS.md](PANELS.md).
+
+### The RNA branch needs different reference data
+
+Nothing on this page applies to an RNA fusion run. It needs two things
+instead, both installed by `install_pipeline.py --with-rna`:
+
+| | Flag | Without it |
+|---|---|---|
+| GENCODE annotation GTF (~1.5 GB) | `--gtf` | A breakpoint stays a pair of coordinates and never becomes a gene name. Required, not optional |
+| STAR index (~30 GB) | `--star-index` | Nothing can be aligned; bwa-mem2 is not an alternative |
+
+The GENCODE **primary-assembly** GTF is the one to use: it names contigs the
+UCSC way (`chr1`, `chrM`), matching the hg38 installed above. The Ensembl
+equivalent writes `1` and `MT`, and a GTF whose contigs do not match the
+genome builds a STAR index over nothing — the same silent failure as the
+COSMIC contig renaming, one file along. The installer checks and warns.
+
+Arriba's blacklist and known-fusion files are **not** downloaded: they ship
+inside the `arriba` conda package. Without the blacklist, recurrent
+read-through artefacts are reported as high-confidence fusions — see
+[RNA.md](RNA.md).
+
+Note that a panel BED is **not** one of the databases on this page. It is not
+downloaded, it is not shared between assays, and it cannot be filled in from
+the installed resources: it comes with your kit, and it is specific to that
+kit's version and genome build.
+
 `--min-allele-fraction` is deliberately **not** shown with a value here. It is
 type-blind, so it buys indel cleanup with SNV sensitivity, and it must come
 from the assay's validated limit of detection rather than from whatever tidies

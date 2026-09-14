@@ -1,0 +1,43 @@
+# The RNA branch's analysis environment.
+#
+# WHY THIS IS A SEPARATE ENVIRONMENT
+#   environment.yml pins openjdk >=21,<24 because GATK's Spark tools cannot
+#   run on 24+ and the failure lands after alignment. Adding STAR and Arriba
+#   to that solve puts two unrelated sets of constraints in one place, and
+#   the thing that gives when a solver is over-constrained is usually the
+#   pin nobody is watching.
+#
+#   Keeping them apart also means the RNA branch can be installed, upgraded
+#   or removed without touching an environment that a validated DNA workflow
+#   depends on. The bundle already works this way: pcgr and pcgrr are their
+#   own environments, and webapp/jobs.py picks the right one per job.
+#
+# WHAT IS DELIBERATELY NOT HERE
+#   No STAR-Fusion. It needs the CTAT genome library -- roughly 40 GB on top
+#   of the 30 GB STAR index -- and Arriba reads the STAR BAM this pipeline
+#   already produces, with its own small reference files shipped inside the
+#   package. See RNA_SCOPE.md for what adding STAR-Fusion would cost and buy.
+#
+#   No salmon, kallisto or featureCounts. Expression quantification is out of
+#   scope, and an installed tool nobody runs is a thing that looks supported.
+name: cancer_rna
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python>=3.8
+  # STAR: the splice-aware aligner. bwa-mem2 cannot align RNA at all -- a
+  # read crossing an exon-exon junction has no contiguous genomic match, so
+  # it is soft-clipped back to one exon or discarded, silently, and those
+  # are exactly the reads that could evidence a fusion.
+  - star>=2.7.10
+  # Arriba: fusion detection from STAR's chimeric alignments. Ships its own
+  # blacklist, known-fusion and protein-domain files inside the package,
+  # which is why there is no separate download step for them.
+  - arriba>=2.4
+  # Shared with the DNA environment, and needed here too: samtools for
+  # sorting and indexing, fastp for trimming.
+  - samtools
+  - fastp>=0.23
+  - fastqc

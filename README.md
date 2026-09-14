@@ -4,6 +4,10 @@ Everything needed to stand this pipeline up on a new machine. Copy this whole
 directory across, run one command, and you get the analysis environment, the
 reference genome, six resource databases, the clinical reporter and its data.
 
+Two branches off one shared QC stage: **DNA** for somatic SNVs and indels,
+and **RNA** for gene fusions (`--with-rna`, opt-in — see
+[RNA.md](RNA.md)).
+
 Nothing here is patient data. This bundle is code, configuration and
 documentation only.
 
@@ -102,8 +106,103 @@ python webapp/app.py --allow-root ~/data --allow-root /path/to/fastqs
 # then open http://127.0.0.1:5000
 ```
 
+**New run** asks one question first: *what are you looking for?*
+
+| Pathway | Finds | Needs |
+|---|---|---|
+| **DNA** | SNVs and indels, tiered | the kit's target BED |
+| **RNA** | gene fusions, splice events | GENCODE GTF + STAR index |
+| **Both** | everything, in **one** report | both of the above |
+
+The hybrid pathway is for a kit whose specimen yields two libraries
+(TSO500, Oncomine Comprehensive, Archer). It queues both runs, links them,
+and PCGR produces a single combined report — rather than leaving someone to
+remember to link two runs after the fact. Profiles name their partner, so
+choosing one half offers the other.
+
+Every output of a run is then a labelled link on its page, grouped by the
+question it answers, with *"can this result be trusted?"* deliberately
+ahead of the findings.
+
 `python3 install_pipeline.py --check` doubles as a health check afterwards, and
 is the fastest way to tell whether an environment has drifted.
+
+### Running more than one panel
+
+```bash
+python comprehensive_variant_calling.py --list-panels
+python comprehensive_variant_calling.py --describe-panel thermo-oncomine-cav3
+
+python comprehensive_variant_calling.py \
+    --panel illumina-tso500 --panel-bed /data/panels/TSO500.bed \
+    -i fastqs/ -o results/ -r hg38 --auto-discover
+```
+
+Naming the assay configures the run for its chemistry in one step:
+interval padding, the allele-fraction and depth floors, whether duplicate
+marking and BQSR are meaningful for that library, the UMI layout, and which
+report statistics the target is large enough to support. Each of those is
+**silent when it is wrong** — duplicate marking left on for an amplicon
+panel finishes normally and calls from a fraction of the real depth.
+
+Profiles ship for Illumina, Thermo Fisher, Agilent, Twist, IDT, QIAGEN,
+Archer and Roche kits, plus generic shapes (`generic-capture`,
+`generic-amplicon`, `generic-hotspot`, `ctdna-capture`, `wes`, `wgs`) for
+anything not listed. **No profile ships a BED** — vendor BEDs are licensed,
+version-specific content that comes from your kit. `--panel-bed` fills both
+`--intervals` and `--coverage-bed`.
+
+Explicit flags always beat the profile, and what the profile set is printed
+at the start of the run and recorded in the manifest. Add your own kit with
+`--new-panel-template`, or save a tuned run with `--save-panel-as`; drop
+the JSON in `~/.config/cancer_pipeline/panels/` and it is found
+automatically. See **[PANELS.md](PANELS.md)**.
+
+Two things happen automatically once a target BED is known: the footprint
+is measured and used as the TMB denominator (PCGR otherwise assumes 34 Mb,
+so a 2 Mb panel reports a TMB 17x too low, silently), and the BED's contig
+naming is checked against the reference — an Ensembl-style BED (`1`, `MT`)
+is called over a renamed copy rather than making the coverage report state
+that none of the panel was covered.
+
+### RNA fusions
+
+```bash
+# Opt in at install time -- 32 GB and an hour of CPU more:
+python3 install_pipeline.py --with-rna --rna-read-length 150
+
+conda activate cancer_rna
+python fusion_calling.py --panel illumina-tso500-rna \
+    -i fastqs/ -o rna_results/ --auto-discover \
+    --reference ~/data/references/hg38/Homo_sapiens_assembly38.fasta \
+    --gtf ~/data/references/gencode/gencode.v44.primary_assembly.annotation.gtf \
+    --star-index ~/data/references/star_hg38_150 --threads 16
+```
+
+A separate branch, not a mode: bwa-mem2 cannot align a read that crosses an
+exon–exon junction, and every step of the DNA engine after alignment is
+either meaningless or actively wrong on RNA. So RNA gets STAR, Arriba, its
+own engine and its own two reports, sharing stage 1, the genome and the panel
+registry. `pipeline_orchestrator.py --assay rna` chains it.
+
+The failure mode it is built around: **a degraded FFPE RNA library produces a
+clean, well-formed, empty fusion table that is indistinguishable from a true
+negative.** So every run measures the library and states, in a sentence,
+whether an empty result may be reported as a negative — and that statement
+precedes the fusion table in every report.
+
+PCGR interprets the fusions too — it takes them as a molecular input in
+their own right — so an RNA run produces a tiered clinical report, and a run
+linked to its DNA partner produces **one** report covering the specimen's
+variants and fusions together.
+
+`MET` exon 14 skipping is called out separately, because it is a splice event
+within one gene rather than a fusion between two, and in a table sorted by
+gene pair it reads as `MET--MET` and is missed.
+
+SNVs and indels are **not** called from RNA, expression is **not** quantified,
+and UMIs are extracted but not collapsed into consensus reads. See
+[RNA_SCOPE.md](RNA_SCOPE.md) for what each omission would cost to add.
 
 ### Staying current
 
@@ -144,6 +243,9 @@ python3 install_pipeline.py --only resources --force
 | Ensembl VEP cache | `~/data/vep_cache/` | 24 GB |
 | SnpEff database | inside the conda environment | 448 MB |
 | MSIsensor2 models | `~/data/msisensor2/models_hg38/` | 251 MB |
+| RNA environment (`--with-rna`) | `~/miniconda3/envs/cancer_rna` | 1.5 GB |
+| GENCODE annotation (`--with-rna`) | `~/data/references/gencode/` | 1.5 GB |
+| STAR index (`--with-rna`) | `~/data/references/star_hg38_<len>/` | 30 GB |
 | The pipeline scripts | wherever you keep this bundle | 1 MB |
 | Install record | `~/data/pipeline_install.json` | 20 KB |
 
@@ -176,15 +278,28 @@ pipeline_orchestrator.py          chains the three stages
 pcgr_report.py                    clinical report wrapper
 coverage_report.py                target coverage: which regions a negative
                                   result is actually entitled to speak for
+panel_profiles.py                 panel profiles: one name configures a run
+                                  for its kit's chemistry
 cancer-dna-pipeline.1             man page
 
 webapp/                           Flask front end (patient details, batch, cleanup)
 
 install.md                        manual install, and the reference the installer follows
 DATABASE_SETUP.md                 what each database is for, and where it goes
+PANELS.md                         running more than one panel, and adding
+                                  a kit of your own
 CNV_SCOPE.md                      copy-number: designed, not built — read before starting it
 
 check_db_updates.py               tells you when a database has a newer release
+
+align_rna.py                      RNA stage 2: STAR, chimeric detection on
+fusion_calling.py                 the RNA engine -- all 6 steps
+rna_qc_report.py                  RNA library QC: whether a negative is
+                                  interpretable at all
+fusion_report.py                  fusion calls ranked by clinical salience
+environment-rna.yml               the RNA environment definition
+RNA.md                            running the RNA branch
+RNA_SCOPE.md                      what the RNA branch does NOT do, and why
 ```
 
 **Keep the Python files in one directory.** The orchestrator locates its
@@ -238,11 +353,27 @@ Specifically not yet established:
   checked against an independent method.
 - **The tumour–normal path has never processed real data.** It exists and is
   exercised by the dry-run tests, but that is not the same thing.
-- **SNV and indel only.** No copy-number, structural-variant or fusion calling.
-  Copy number is scoped in [CNV_SCOPE.md](CNV_SCOPE.md) but not implemented: it
+- **The RNA branch has never been validated at all.** It is newer than
+  everything above and has no truth set: no fusion call it produces has been
+  checked against FISH, RT-PCR or a second caller. For anchored-PCR panels
+  (Archer, Oncomine) the vendor's own caller is the validated route, and
+  results here are orthogonal evidence rather than a replacement. See
+  [RNA_SCOPE.md](RNA_SCOPE.md).
+- **SNV and indel only on the DNA branch.** No copy-number or
+  structural-variant calling.
+  Fusions are the RNA branch's job. Copy number is scoped in
+  [CNV_SCOPE.md](CNV_SCOPE.md) but not implemented: it
   waits on 10+ normals sequenced on the same assay, in the same lab, at the
   same fixation state. Every tool it needs is already present or one conda
   package away.
+- **Validated on one chemistry.** Everything here — QC, alignment,
+  filtering thresholds — was tuned on Illumina paired-end capture data. The
+  panel profiles configure what can be configured for amplicon and Ion
+  Torrent chemistries, but that is not the same as having been validated on
+  them. A profile is a set of sensible defaults, never a validation.
+- **No UMI consensus calling.** UMIs are extracted into the read name; no
+  consensus or duplex reads are built. A kit sold for 0.1% ctDNA detection
+  will not reach 0.1% here.
 - **A negative is only as good as its coverage.** A region the sequencing
   never reached produces no variant, exactly like a region that is wild type,
   and a VCF cannot say which happened. Pass your panel BED as `--coverage-bed`

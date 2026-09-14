@@ -22,6 +22,11 @@ package-manager conflicts.
 | SnpEff     | comprehensive_variant_calling.py | Gene/consequence annotation      | `snpeff` |
 | PCGR       | (optional) pcgr_report.py, comprehensive_variant_calling.py step 13 | Clinical report: actionability tiers; TMB / MSI / signatures only if the matching `--pcgr-estimate-*` flag is passed | `pcgr` |
 | coverage_report.py | (optional) comprehensive_variant_calling.py step 12 | Which target regions the sequencing actually reached, so an absent variant can be told from an unsequenced one; needs only samtools | in this bundle |
+| panel_profiles.py | (optional) `--panel` in fastq_qc_clean.py and comprehensive_variant_calling.py | Panel profiles: one name configures a run for its kit's chemistry, measures the TMB denominator from the target BED, and reconciles the BED's contig naming with the reference; pure standard library | in this bundle |
+| STAR | (RNA branch) align_rna.py, fusion_calling.py | Splice-aware alignment. bwa-mem2 cannot align across an exon-exon junction, so it is not an alternative here | `star` (cancer_rna env) |
+| Arriba | (RNA branch) fusion_calling.py | Fusion detection from STAR's chimeric alignments; ships its own blacklist and known-fusion files | `arriba` (cancer_rna env) |
+| rna_qc_report.py | (RNA branch) fusion_calling.py step 5 | Whether a negative fusion result is interpretable at all; needs only samtools | in this bundle |
+| fusion_report.py | (RNA branch) fusion_calling.py step 6 | Fusion calls ranked by clinical salience rather than caller confidence | in this bundle |
 | multiqc    | (optional, suggested by fastq_qc_clean.py) | Aggregate reports          | `multiqc` |
 | Flask      | (optional) webapp/ only            | Web interface                       | `flask` (pip or conda) |
 | wget/curl  | system (reference auto-download)   | Download hg38 reference from Broad, once, into the shared `--reference-dir` | system package |
@@ -448,6 +453,16 @@ python comprehensive_variant_calling.py --help >/dev/null && echo "comprehensive
 python pipeline_orchestrator.py --help >/dev/null && echo "orchestrator OK"
 python pcgr_report.py --help >/dev/null && echo "pcgr_report OK"
 python coverage_report.py --help >/dev/null && echo "coverage_report OK"
+python panel_profiles.py --help >/dev/null && echo "panel_profiles OK"
+
+# The RNA branch (only if you installed it with --with-rna):
+python align_rna.py --help >/dev/null && echo "align_rna OK"
+python fusion_calling.py --help >/dev/null && echo "fusion_calling OK"
+python rna_qc_report.py --help >/dev/null && echo "rna_qc_report OK"
+python fusion_report.py --help >/dev/null && echo "fusion_report OK"
+
+# And the panel registry itself, which needs nothing installed:
+python comprehensive_variant_calling.py --list-panels | head -5
 ```
 
 A dry run exercises the real command construction without touching your data,
@@ -499,7 +514,10 @@ code it started with, which is why an update mid-run does not disturb it.
 ## 7a. Manual page (optional)
 
 The four pipeline scripts, `pcgr_report.py` and `coverage_report.py` are
-documented in one section-1 man page:
+documented in one section-1 man page (panel profiles have their own guide,
+[PANELS.md](PANELS.md), and the RNA branch has [RNA.md](RNA.md) and
+[RNA_SCOPE.md](RNA_SCOPE.md); the options of all of them are in the man page
+too):
 
 ```bash
 # Read it in place
