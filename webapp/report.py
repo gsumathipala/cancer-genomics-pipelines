@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 report.py
 =========
@@ -265,7 +266,7 @@ def build_report(patient, run, output_dir, pdf_path):
     doc.paragraph(
         "Generated " +
         datetime.datetime.now().strftime("%Y-%m-%d %H:%M") +
-        " by the cancer DNA pipeline web interface.",
+        " by the Cancer Genomics Pipelines web interface.",
         size=9, grey=0.4)
 
     # --- Patient -------------------------------------------------------

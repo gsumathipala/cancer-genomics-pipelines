@@ -1,3 +1,4 @@
+<!-- Created by Brainstorm, 2026. -->
 # Panels — running more than one assay
 
 This pipeline was written against one panel. Everything that panel needed

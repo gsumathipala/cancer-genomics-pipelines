@@ -1,3 +1,4 @@
+<!-- Created by Brainstorm, 2026. -->
 # RNA — running the fusion branch
 
 Fusion detection from RNA, for cancer panels. `ALK`, `ROS1`, `RET`,
@@ -219,6 +220,32 @@ empty table first has already concluded "negative" by the time they reach
 the caveat.
 
 ---
+
+## Keeping it current
+
+```bash
+python3 check_db_updates.py --print
+```
+
+Reports two RNA-specific things, and only when the branch is installed:
+
+- **GENCODE release.** A newer one changes gene names and transcript sets,
+  so do not mix releases within a cohort.
+- **STAR index consistency.** Whether each index was built from the
+  annotation that is still installed. Nothing else asks this question
+  outside of a run, and getting it wrong is silent: STAR runs, the mapping
+  rate looks normal, and the junctions it knows about are the old ones.
+
+Upgrading the annotation means rebuilding the index, because the annotation
+is baked into it:
+
+```bash
+python3 install_pipeline.py --only gencode star-index --force --rna-read-length 150
+```
+
+The installer pins a GENCODE release rather than tracking the newest, so
+two machines installed a week apart agree about which transcripts exist.
+The checker reports drift; it never upgrades by itself.
 
 ## Things that will bite you
 

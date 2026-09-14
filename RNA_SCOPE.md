@@ -1,3 +1,4 @@
+<!-- Created by Brainstorm, 2026. -->
 # RNA — what was built, what was not, and why
 
 The RNA branch detects **gene fusions**. That is the whole of it. This

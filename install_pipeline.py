@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 install_pipeline.py
 ===================
-Install the cancer DNA pipeline and everything it needs on a fresh machine.
+Install the Cancer Genomics Pipelines and everything it needs on a fresh machine.
 
 WHAT THIS IS FOR
 ----------------
@@ -643,7 +644,12 @@ def step_reference(args):
 # writes 1 and MT, and a GTF whose contigs do not match the genome produces a
 # STAR index over nothing -- the same class of silent failure as the COSMIC
 # contig renaming, one file along.
-GENCODE_RELEASE_DEFAULT = "44"
+# Pinned, not floating. A release is chosen when a bundle ships and stays
+# put: the annotation is baked into the STAR index, and a default that
+# drifted would mean two machines installed a week apart disagreed about
+# which transcripts exist. check_db_updates.py reports when a newer one is
+# out and says what upgrading costs; it never upgrades by itself.
+GENCODE_RELEASE_DEFAULT = "50"
 GENCODE_URL = ("https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/"
                "release_{release}/gencode.v{release}.primary_assembly."
                "annotation.gtf.gz")
@@ -1320,12 +1326,12 @@ def step_code(args):
 
 def step_manpage(args):
     """The man page, into the user's own man path."""
-    src = os.path.join(args.repo, "cancer-dna-pipeline.1")
+    src = os.path.join(args.repo, "cancer-genomics-pipelines.1")
     if not os.path.exists(src):
         LOG.skip("no man page in the repo")
         return True
     dest_dir = os.path.expanduser("~/.local/share/man/man1")
-    dest = os.path.join(dest_dir, "cancer-dna-pipeline.1")
+    dest = os.path.join(dest_dir, "cancer-genomics-pipelines.1")
     if args.dry_run:
         LOG.info(f"(dry run) would install {src} -> {dest}")
         return True
@@ -1333,7 +1339,7 @@ def step_manpage(args):
     shutil.copyfile(src, dest)
     os.chmod(dest, 0o644)
     LOG.ok(f"man page installed ({dest})")
-    LOG.info("read it with: man cancer-dna-pipeline")
+    LOG.info("read it with: man cancer-genomics-pipelines")
     return True
 
 
@@ -1595,7 +1601,7 @@ OPTIONAL_STEPS = frozenset({"rna-envs", "gencode", "star-index"})
 def build_parser():
     names = ", ".join(name for name, _d, _f in STEPS)
     parser = argparse.ArgumentParser(
-        description="Install the cancer DNA pipeline and its dependencies.",
+        description="Install the Cancer Genomics Pipelines and its dependencies.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"Steps, in order: {names}\n\n"
                f"Re-running is safe: each step checks first and skips what is "
@@ -1730,7 +1736,7 @@ def main():
                 and (s[0] not in OPTIONAL_STEPS or s[0] in wanted_optional)]
 
     code_dir, code_source = resolve_code_dir(args)
-    print(f"{LOG._c(Log.BOLD, 'Cancer DNA pipeline installer')}")
+    print(f"{LOG._c(Log.BOLD, 'Cancer Genomics Pipelines installer')}")
     print(f"  repo     : {args.repo}")
     print(f"  data dir : {args.data_dir}")
     if os.path.abspath(code_dir) != os.path.abspath(args.repo):

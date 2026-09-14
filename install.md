@@ -1,3 +1,4 @@
+<!-- Created by Brainstorm, 2026. -->
 # Installation Guide
 
 This guide installs every external tool required by the three pipeline scripts
@@ -521,15 +522,15 @@ too):
 
 ```bash
 # Read it in place
-man ./cancer-dna-pipeline.1
+man ./cancer-genomics-pipelines.1
 
 # Install for the current user
 mkdir -p ~/.local/share/man/man1
-cp cancer-dna-pipeline.1 ~/.local/share/man/man1/
-man cancer-dna-pipeline
+cp cancer-genomics-pipelines.1 ~/.local/share/man/man1/
+man cancer-genomics-pipelines
 
 # Or system-wide
-sudo install -m644 cancer-dna-pipeline.1 /usr/share/man/man1/
+sudo install -m644 cancer-genomics-pipelines.1 /usr/share/man/man1/
 ```
 
 It covers every command-line option, the three input modes, the manifest
@@ -811,7 +812,7 @@ partial install can be detected rather than discovered later at runtime.
 | 8b | MSIsensor2 models `models_hg38` | for step 8 (MSI) | 251 MB | directory of ~2,800 files |
 | 9 | PCGR (2 envs) + bundle + VEP cache | for step 13 | ~6 GB envs + 31 GB data | `conda activate pcgr && pcgr --version` |
 | 10 | Flask | for `webapp/` only | ~10 MB | `python -c "import flask"` |
-| 11 | Man page | cosmetic | <1 MB | `man cancer-dna-pipeline` |
+| 11 | Man page | cosmetic | <1 MB | `man cancer-genomics-pipelines` |
 
 Only 1–4 are needed to call variants. Everything else degrades gracefully:
 missing SnpEff, COSMIC, PCGR or bcftools cause the corresponding step to be

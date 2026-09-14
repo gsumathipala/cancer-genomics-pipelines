@@ -1,3 +1,4 @@
+<!-- Created by Brainstorm, 2026. -->
 # Database Setup — where to put COSMIC, gnomAD and the rest
 
 Scope: which reference/annotation databases this pipeline needs, where to copy
@@ -292,6 +293,11 @@ UCSC way (`chr1`, `chrM`), matching the hg38 installed above. The Ensembl
 equivalent writes `1` and `MT`, and a GTF whose contigs do not match the
 genome builds a STAR index over nothing — the same silent failure as the
 COSMIC contig renaming, one file along. The installer checks and warns.
+
+`check_db_updates.py` reports on both once they are installed — including
+whether each STAR index is still consistent with the installed annotation,
+which is the one way to catch an index that has outlived the GTF it was
+built from without doing a run.
 
 Arriba's blacklist and known-fusion files are **not** downloaded: they ship
 inside the `arriba` conda package. Without the blacklist, recurrent

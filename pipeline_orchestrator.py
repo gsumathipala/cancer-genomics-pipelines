@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 pipeline_orchestrator.py
 ========================
-Orchestrator that chains the three stages of the cancer DNA pipeline
+Orchestrator that chains the three stages of the Cancer Genomics Pipelines
 into a single command:
 
     STAGE 1: fastq_qc_clean.py

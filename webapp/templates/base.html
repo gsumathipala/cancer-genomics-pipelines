@@ -1,14 +1,15 @@
+{#- Created by Brainstorm, 2026. -#}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Cancer DNA Pipeline{% endblock %}</title>
+  <title>{% block title %}Cancer Genomics Pipelines{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="{{ url_for('index') }}">Cancer DNA Pipeline</a>
+    <a class="brand" href="{{ url_for('index') }}">Cancer Genomics Pipelines</a>
     <nav>
       <a href="{{ url_for('index') }}">Runs</a>
       <a href="{{ url_for('databases') }}">Databases</a>

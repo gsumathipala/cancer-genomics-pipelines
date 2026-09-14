@@ -1,3 +1,4 @@
+<!-- Created by Brainstorm, 2026. -->
 # Somatic copy number: scope for when normals exist
 
 Status: **not implemented.** This is the design to build against, written

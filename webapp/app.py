@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 app.py
 ======
-Flask front end for the cancer DNA pipeline: submit a run with patient
+Flask front end for the Cancer Genomics Pipelines: submit a run with patient
 details, watch it progress, and produce a PDF report from the result.
 
 RUNNING IT
@@ -1767,18 +1768,45 @@ def job_cleanup(job_id):
 
 @app.route("/job/<job_id>/results")
 def job_results(job_id):
-    """Show what the run produced, and where PCGR's own report lives."""
+    """
+    Show what the run produced, and where the interpretation lives.
+
+    ASSAY-AWARE, because it was not and the result was actively
+    misleading: on an RNA run it read a DNA manifest that does not exist
+    (so every field was blank), then reported "no coverage report -- this
+    run was submitted without a target BED", which on an RNA run is not a
+    missing input but a concept that does not apply. A page that invents a
+    shortcoming teaches an operator to distrust the ones that are real.
+    """
     job = manager.get(job_id) or abort(404)
     output_dir = job.meta.get("output_dir") or ""
-    manifest = load_pipeline_manifest(output_dir) if output_dir else {}
+    assay = job.assay
+    manifest = {}
+    if output_dir:
+        manifest = (jobs.latest_manifest(output_dir, "rna") if assay == "rna"
+                    else load_pipeline_manifest(output_dir)) or {}
     pcgr = find_pcgr_outputs(output_dir) if output_dir else {"html": [],
                                                              "tsv": [],
                                                              "dir": ""}
     pdf_path = os.path.join(job.run_dir, f"report_{job_id}.pdf")
+
+    # For an RNA run the question "was the sequencing good enough?" is
+    # answered by the library-adequacy report, not by target coverage.
+    quality = []
+    if assay == "rna":
+        quality = [(i, os.path.basename(p)[:-len(".rna_qc.html")])
+                   for i, p in enumerate(
+                       jobs.find_rna_reports(output_dir, "qc"))]
+    fusions = [(i, os.path.basename(p)[:-len(".fusions.html")])
+               for i, p in enumerate(
+                   jobs.find_rna_reports(output_dir, "fusion"))]
+
     return render_template("results.html", job=job.snapshot(),
+                           assay=assay,
                            manifest=manifest, pcgr=pcgr,
                            coverage=coverage_links(job),
                            coverage_bed=job.meta.get("coverage_bed"),
+                           rna_quality=quality, rna_fusions=fusions,
                            has_pdf=os.path.exists(pdf_path),
                            patient=job.patient,
                            patient_fields=PATIENT_FIELDS)
@@ -2018,7 +2046,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Web interface for the cancer DNA pipeline.",
+        description="Web interface for the Cancer Genomics Pipelines.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--host", default="127.0.0.1",
                         help="Interface to bind. The default keeps the app "

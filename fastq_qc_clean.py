@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 fastq_qc_clean.py
 =================

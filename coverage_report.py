@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 coverage_report.py -- did the sequencing actually cover the regions we
 report on?

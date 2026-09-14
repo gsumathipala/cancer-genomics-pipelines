@@ -1,10 +1,11 @@
-.\" Man page for the Cancer DNA somatic variant-calling pipeline.
-.\" Render locally with:  man ./cancer-dna-pipeline.1
-.\" Install with:         install -m644 cancer-dna-pipeline.1 /usr/share/man/man1/
-.TH CANCER\-DNA\-PIPELINE 1 "2026-09-07" "cancer\-dna\-pipeline" "User Commands"
+.\" Created by Brainstorm, 2026.
+.\" Man page for the Cancer Genomics Pipelines (DNA variants, RNA fusions).
+.\" Render locally with:  man ./cancer-genomics-pipelines.1
+.\" Install with:         install -m644 cancer-genomics-pipelines.1 /usr/share/man/man1/
+.TH CANCER\-GENOMICS\-PIPELINES 1 "2026-09-07" "cancer\-genomics\-pipelines" "User Commands"
 .
 .SH NAME
-cancer\-dna\-pipeline \- somatic variant and fusion calling for Illumina cancer panels
+cancer\-genomics\-pipelines \- somatic variant and fusion calling for Illumina cancer panels
 .PP
 DNA branch:
 .BR fastq_qc_clean.py ,
@@ -1221,6 +1222,11 @@ is fatal, since each produces an artefact the rest of the run needs.
 are enrichment only: they warn and the run continues.
 .
 .SS check_db_updates.py \(em database release notifier
+With the RNA branch installed it also reports the GENCODE release and
+whether each STAR index is still consistent with it. The second has no
+other home: an index outliving the annotation it was built from is silent
+\(em STAR runs, the mapping rate looks normal, and the junctions it knows
+about are the old ones. Both are omitted entirely on a DNA-only machine.
 Checks whether any installed reference database has a newer release, and
 writes the result to
 .I ~/.cache/cancer_pipeline/db_updates.json

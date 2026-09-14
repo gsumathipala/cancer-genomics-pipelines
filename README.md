@@ -1,4 +1,5 @@
-# Cancer DNA Pipeline — installer bundle
+<!-- Created by Brainstorm, 2026. -->
+# Cancer Genomics Pipelines — installer bundle
 
 Everything needed to stand this pipeline up on a new machine. Copy this whole
 directory across, run one command, and you get the analysis environment, the
@@ -213,6 +214,12 @@ python3 check_db_updates.py --print       # any newer database releases?
 Writes its answer to `~/.cache/cancer_pipeline/db_updates.json`. The script
 **reports only** — nothing is downloaded or replaced, and no run reads it.
 
+With the RNA branch installed it also checks the **GENCODE release** and
+whether each **STAR index is still consistent with it**. That second check
+has no other home: an index outliving the annotation it was built from is
+completely silent — STAR runs, the mapping rate looks normal, and the
+junctions it knows about are the old ones.
+
 The web interface runs it **at startup** and whenever you press *Check now*, so
 its front page is about today rather than about whenever someone last
 remembered. Its **Databases** page lists every checked source and offers a
@@ -280,7 +287,7 @@ coverage_report.py                target coverage: which regions a negative
                                   result is actually entitled to speak for
 panel_profiles.py                 panel profiles: one name configures a run
                                   for its kit's chemistry
-cancer-dna-pipeline.1             man page
+cancer-genomics-pipelines.1             man page
 
 webapp/                           Flask front end (patient details, batch, cleanup)
 
