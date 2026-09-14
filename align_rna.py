@@ -324,7 +324,12 @@ def chimeric_args():
         "--alignSplicedMateMapLminOverLmate", "0.5",
         "--alignSJstitchMismatchNmax", "5", "-1", "5", "5",
         "--chimSegmentMin", "10",
-        "--chimOutType", "WithinBAM", "SoftClip",
+        # BOTH output channels. WithinBAM is what Arriba reads; Junctions
+        # writes Chimeric.out.junction, which costs almost nothing and is
+        # the only way to tell "STAR found no fusions" apart from "STAR
+        # found them and did not put them where the caller looks" -- see
+        # verify_chimeric_output() below, which compares the two.
+        "--chimOutType", "Junctions", "WithinBAM", "SoftClip",
         "--chimJunctionOverhangMin", "10",
         "--chimScoreDropMax", "30",
         "--chimScoreJunctionNonGTAG", "0",
@@ -419,6 +424,83 @@ def sort_and_index(bam, output_bam, threads, log_path=None, dry_run=False):
                        tag="samtools index", log_path=log_path,
                        dry_run=dry_run)
     return code == 0
+
+
+def bam_has_chimeric_alignments(bam):
+    """
+    Does this BAM actually contain chimeric alignments?
+
+    Streams the BAM and stops at the FIRST read carrying STAR's ch:A:1
+    attribute, so the healthy case costs almost nothing. Only a BAM with
+    none is read in full -- which is exactly the case worth spending time
+    on.
+
+    Returns True / False, or None when it could not be determined.
+    """
+    if not bam or not os.path.exists(bam) or shutil.which("samtools") is None:
+        return None
+    try:
+        view = subprocess.Popen(["samtools", "view", bam],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            for raw in view.stdout:
+                if b"ch:A:1" in raw:
+                    return True
+            return False
+        finally:
+            view.stdout.close()
+            view.terminate()
+            view.wait(timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def verify_chimeric_output(result, stats):
+    """
+    Catch the failure that would otherwise read as "no fusions found".
+
+    THE FAILURE THIS EXISTS FOR. STAR counts chimeric reads in its own log
+    and writes them into the BAM only when --chimOutType WithinBAM takes
+    effect. Those two can disagree: STAR reports a chimeric count, the BAM
+    receives nothing, and the fusion caller -- which reads the BAM and
+    nothing else -- finds no fusions and exits cleanly.
+
+    The result is an empty, well-formed fusion table for a specimen that
+    may well carry a fusion. Indistinguishable, in every downstream
+    artefact, from a true negative. Observed directly: STAR reporting 116
+    chimeric reads and writing 0 into the BAM, while
+    Chimeric.out.junction held all 116.
+
+    So the two channels are compared, and a disagreement is an ERROR with
+    an explanation, not a silent empty table.
+
+    Returns a list of warning strings (empty when consistent).
+    """
+    notes = []
+    reported = stats.get("Number of chimeric reads")
+    if not reported:
+        return notes                      # nothing claimed, nothing to check
+
+    in_bam = bam_has_chimeric_alignments(result.get("bam"))
+    if in_bam is None:
+        return notes                      # could not check; say nothing
+
+    if not in_bam:
+        junction = result.get("prefix", "") + "Chimeric.out.junction"
+        found_elsewhere = (os.path.exists(junction) and
+                           os.path.getsize(junction) > 0)
+        notes.append(
+            f"STAR reports {reported:,} chimeric reads, but NONE were "
+            f"written into {os.path.basename(result.get('bam', 'the BAM'))}. "
+            f"The fusion caller reads only that BAM, so it will find "
+            f"nothing and exit cleanly -- an empty fusion table that is "
+            f"indistinguishable from a true negative. This is a STAR "
+            f"output-configuration problem, not a property of the "
+            f"specimen."
+            + (f" The junctions ARE in {os.path.basename(junction)}, which "
+               f"confirms detection worked and only the in-BAM output "
+               f"failed." if found_elsewhere else ""))
+    return notes
 
 
 def parse_star_log(path):
@@ -789,6 +871,10 @@ def main():
                 result["sorted_bam"] = sorted_bam
         stats = parse_star_log(result["star_log"]) if not args.dry_run else {}
         result["star_stats"] = stats
+        if not args.dry_run:
+            for note in verify_chimeric_output(result, stats):
+                print(f"[ERROR] {note}")
+                result.setdefault("chimeric_warnings", []).append(note)
         if stats:
             print(f"[OK] {name}: "
                   f"{stats.get('Uniquely mapped reads %', '?')}% uniquely "

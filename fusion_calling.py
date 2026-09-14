@@ -74,7 +74,7 @@ from align_rna import (star_align, sort_and_index, parse_star_log,   # noqa: E40
                        index_is_present, check_index_provenance,
                        read_index_record, load_qc_manifest,
                        default_star_index, DEFAULT_REFERENCE_DIR,
-                       run_command, tool_version)
+                       run_command, tool_version, verify_chimeric_output)
 
 TOTAL_STEPS = 6
 
@@ -680,6 +680,17 @@ def main():
         stats = ({} if args.dry_run
                  else parse_star_log(aligned.get("star_log", "")))
         record["star_stats"] = stats
+
+        # Does the BAM the caller is about to read actually contain the
+        # chimeric alignments STAR says it found? If not, Arriba will
+        # return an empty table that looks exactly like a true negative.
+        if not args.dry_run:
+            chimeric_notes = verify_chimeric_output(aligned, stats)
+            for note in chimeric_notes:
+                print(f"[ERROR] {note}")
+            if chimeric_notes:
+                record["chimeric_output_broken"] = chimeric_notes
+                manifest.setdefault("warnings", []).extend(chimeric_notes)
         if stats:
             print(f"[OK] {stats.get('Uniquely mapped reads %', '?')}% "
                   f"uniquely mapped, "

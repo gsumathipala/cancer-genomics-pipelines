@@ -621,7 +621,7 @@ STAR --runThreadN 8 --genomeDir star_hg38_150 \
 | Flag | Why it is there |
 |---|---|
 | `--chimSegmentMin 10` | **STAR's default is 0, meaning chimeric detection is OFF.** This single value is the difference between a fusion panel and an empty table |
-| `--chimOutType WithinBAM SoftClip` | write chimeric alignments into the main BAM so the caller reads one input |
+| `--chimOutType Junctions WithinBAM SoftClip` | `WithinBAM` puts chimeric alignments in the main BAM, which is the only thing the caller reads. `Junctions` additionally writes `Chimeric.out.junction` — cheap, and the only way to tell "no fusions" apart from "found them, didn't write them where the caller looks" (see below) |
 | `--chimScoreJunctionNonGTAG 0` | a fusion breakpoint is a **genomic rearrangement, not a splice site**, so it must not be penalised for lacking the canonical GT/AG intron motif. STAR's default penalty is −1 |
 | `--chimScoreDropMax 30` | tolerate the alignment-score penalty a genuine fusion incurs |
 | `--chimMultimapNmax 50`, `--outFilterMultimapNmax 50` | fusion partners are often repetitive; discarding multimappers discards the fusion |
@@ -678,6 +678,26 @@ These reference files **ship inside the conda package** (usually
 `$CONDA_PREFIX/var/lib/arriba`), which is why there is no separate download
 step — and why this pipeline locates them explicitly and warns loudly if it
 cannot.
+
+> **A failure worth knowing about, found by running this for real.** STAR
+> counts chimeric reads in its own log, and writes them into the BAM only
+> when `--chimOutType WithinBAM` actually takes effect. **Those two can
+> disagree.** Observed directly on a controlled test: STAR reported 116
+> chimeric reads, `Chimeric.out.junction` contained all 116 at the correct
+> breakpoint — and the BAM contained **zero**. The caller reads only the
+> BAM, so it would have found nothing and exited cleanly: an empty,
+> well-formed fusion table for a specimen that demonstrably carried a
+> fusion, indistinguishable from a true negative.
+>
+> So the pipeline now **compares the two channels after every alignment**
+> and raises an error naming the discrepancy. The check streams the BAM
+> and stops at the first chimeric read, so the healthy case costs almost
+> nothing and only a broken one is read in full — which is exactly where
+> you want to spend the time.
+>
+> The general lesson: when a tool reports a count in one place and writes
+> data in another, **verify they agree**. Do not assume a flag took
+> effect because the command exited zero.
 
 **No duplicate marking, and no flag to enable it.** On RNA, twenty
 identical reads from a highly expressed gene are twenty genuine

@@ -261,6 +261,13 @@ The checker reports drift; it never upgrades by itself.
 - **Contig naming.** GENCODE's primary-assembly GTF uses UCSC names (`chr1`,
   `chrM`) and matches the installed hg38. An Ensembl GTF (`1`, `MT`) does
   not, and builds an index over nothing. The installer checks and warns.
+- **STAR can find chimeric reads and not write them to the BAM.** The two
+  are separate: the count in `Log.final.out` and the `ch:A:1` alignments in
+  the BAM that Arriba actually reads. When they disagree the fusion table
+  comes back empty and looks like a true negative. Every alignment now
+  checks, and errors loudly with the discrepancy — it also asks STAR for
+  `Chimeric.out.junction`, so the junctions are preserved as evidence even
+  when the in-BAM output fails.
 - **Arriba's blacklist.** It ships inside the conda package and is normally
   found automatically. Without it, recurrent read-through artefacts are
   reported as high-confidence fusions and the table fills with noise. The run
