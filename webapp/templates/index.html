@@ -61,7 +61,10 @@
 {% if not jobs %}
   <div class="empty">
     <p>No runs yet.</p>
-    <p><a class="button" href="{{ url_for('new_run') }}">Start a run</a></p>
+    {# The chooser, not the DNA form. This is where a first-time user
+       starts, and sending them straight to one assay's form asks them to
+       have already made the choice the chooser exists to present. #}
+    <p><a class="button" href="{{ url_for('choose_pathway') }}">Start a run</a></p>
   </div>
 {% else %}
 <table class="grid">
