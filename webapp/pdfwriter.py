@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 pdfwriter.py
 ============
@@ -369,7 +370,7 @@ class PDFDocument:
         info_num = max(objects) + 1
         objects[info_num] = (
             f"<< /Title ({_escape(self.title)}) "
-            f"/Producer (cancer-dna-pipeline webapp) "
+            f"/Producer (cancer-genomics-pipelines webapp) "
             f"/CreationDate ({stamp}) >>").encode("latin-1")
 
         out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")

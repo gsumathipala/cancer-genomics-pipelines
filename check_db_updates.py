@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 check_db_updates.py
 ===================
@@ -367,6 +368,112 @@ def check_cosmic(data_dir):
 
 
 # =============================================================================
+# =============================================================================
+# THE RNA BRANCH'S REFERENCE DATA
+# =============================================================================
+# Only reported when it is installed. A DNA-only laboratory has not chosen
+# to have these and should not be told they are out of date.
+
+def check_gencode(data_dir):
+    """
+    GENCODE annotation, via the release directories on the EBI FTP server.
+
+    Upgrading is the same kind of decision a VEP upgrade is, with one extra
+    consequence: the annotation is BAKED INTO the STAR index. Changing
+    GENCODE without rebuilding the index leaves the aligner finding
+    junctions from one annotation while the fusion caller names genes from
+    another -- see check_star_index() below, which is the check that
+    actually catches it.
+    """
+    directory = os.path.join(data_dir, "references", "gencode")
+    installed = None
+    if os.path.isdir(directory):
+        releases = [int(m.group(1)) for f in os.listdir(directory)
+                    for m in [re.match(r"gencode\.v(\d+)\.", f)] if m]
+        installed = max(releases) if releases else None
+    if installed is None:
+        return None                       # the RNA branch is not installed
+
+    url = "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/"
+    body = fetch(url)
+    if not body:
+        return result("GENCODE annotation (RNA)", installed, state="unknown",
+                      note="ftp.ebi.ac.uk unreachable", url=url)
+    found = sorted({int(m) for m in re.findall(r"release_(\d+)", body)})
+    latest = found[-1] if found else None
+    if latest and latest > installed:
+        return result(
+            "GENCODE annotation (RNA)", installed, latest, "update",
+            f"release {latest} available. The annotation is baked into the "
+            f"STAR index, so upgrading means rebuilding it "
+            f"(install_pipeline.py --only gencode star-index --force) -- "
+            f"about an hour. Gene names and transcript sets shift between "
+            f"releases, so do not mix them within a cohort.",
+            f"{url}release_{latest}/")
+    return result("GENCODE annotation (RNA)", installed, latest, "current")
+
+
+def check_star_index(data_dir):
+    """
+    Is each STAR index still consistent with the installed annotation?
+
+    This is the check that matters, and nothing else performs it. An index
+    outliving the GTF it was built from is completely silent: STAR runs,
+    the mapping rate looks normal, and the junctions it knows about are the
+    old ones. align_rna.py warns at run time when it can compare the two,
+    but only a run does that -- this asks the question without one.
+    """
+    references = os.path.join(data_dir, "references")
+    if not os.path.isdir(references):
+        return None
+    indexes = [d for d in sorted(os.listdir(references))
+               if d.startswith("star_")
+               and os.path.exists(os.path.join(references, d, "SAindex"))]
+    if not indexes:
+        return None                       # the RNA branch is not installed
+
+    gencode_dir = os.path.join(references, "gencode")
+    installed_gtfs = set()
+    if os.path.isdir(gencode_dir):
+        installed_gtfs = {f for f in os.listdir(gencode_dir)
+                          if f.endswith(".gtf")}
+
+    stale = []
+    unknown = []
+    for name in indexes:
+        record_path = os.path.join(references, name, "pipeline_index.json")
+        try:
+            with open(record_path, encoding="utf-8") as fh:
+                record = json.load(fh)
+        except (OSError, ValueError):
+            unknown.append(name)
+            continue
+        built_from = os.path.basename(record.get("gtf") or "")
+        if installed_gtfs and built_from and built_from not in installed_gtfs:
+            stale.append(f"{name} (built from {built_from})")
+
+    summary = f"{len(indexes)} index(es): {', '.join(indexes)}"
+    if stale:
+        return result(
+            "STAR index (RNA)", summary, "rebuild needed", "changed",
+            f"built from an annotation that is no longer installed: "
+            f"{'; '.join(stale)}. STAR would find junctions from one "
+            f"annotation while the fusion caller names genes from another. "
+            f"Rebuild with install_pipeline.py --only star-index --force "
+            f"--rna-read-length <N>.",
+            "")
+    if unknown:
+        return result(
+            "STAR index (RNA)", summary, None, "manual",
+            f"no build record in {', '.join(unknown)}, so the annotation "
+            f"and read length they were built for cannot be checked. An "
+            f"index built elsewhere carries none; confirm it matches the "
+            f"installed GENCODE.", "")
+    return result("STAR index (RNA)", summary, "consistent", "current",
+                  "built from the installed annotation")
+
+
+# =============================================================================
 # DRIVER
 # =============================================================================
 
@@ -379,11 +486,18 @@ def run_checks(data_dir):
         check_snpeff,
         lambda: check_gatk_resources(data_dir),
         lambda: check_cosmic(data_dir),
+        # The RNA branch. Both return None when it is not installed, so a
+        # DNA-only machine's report is unchanged.
+        lambda: check_gencode(data_dir),
+        lambda: check_star_index(data_dir),
     ]
     out = []
     for fn in checks:
         try:
-            out.append(fn())
+            answer = fn()
+            if answer is None:
+                continue                  # not installed; not applicable
+            out.append(answer)
         except Exception as exc:              # noqa: BLE001 - reported inline
             out.append(result("(check failed)", "?", None, "unknown",
                               f"{type(exc).__name__}: {exc}"))

@@ -1,0 +1,177 @@
+{#- Created by Brainstorm, 2026. -#}
+{% extends "base.html" %}
+{% block title %}New hybrid run &middot; Cancer Genomics Pipelines{% endblock %}
+{% block content %}
+
+<h1>New hybrid run &mdash; DNA + RNA</h1>
+
+{% if errors %}
+<div class="errors">
+  <strong>Nothing was started:</strong>
+  <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  <p class="hint">Neither half was queued. Fix the above and submit again.</p>
+</div>
+{% endif %}
+
+<section class="card">
+  <p class="hint">One specimen, two libraries. This queues <strong>two
+    runs</strong> &mdash; the DNA half first, then the RNA half linked back
+    to it &mdash; and the clinical report at the end covers both together
+    rather than arriving as two documents to reconcile.</p>
+  <p class="hint">Outputs go into <code>&lt;output directory&gt;/dna/</code>
+    and <code>&lt;output directory&gt;/rna/</code>. Runs execute one at a
+    time on this machine, so expect the RNA half to start after the DNA half
+    finishes.</p>
+</section>
+
+<form method="post" action="{{ url_for('submit_hybrid') }}" class="stack">
+  <input type="hidden" name="form_rendered" value="1">
+
+  <section class="card">
+    <h2>Patient and specimen</h2>
+    <p class="hint">Recorded once and applied to both runs. Stored on this
+      machine for the report only &mdash; never passed to the pipeline.</p>
+    <div class="fields">
+      {% for key, label in patient_fields %}
+      <label>
+        <span>{{ label }}</span>
+        {% if key == 'notes' %}
+          <textarea name="{{ key }}" rows="2">{{ (patient or {}).get(key, '') }}</textarea>
+        {% elif key == 'sex' %}
+          <select name="sex">
+            {% for opt in ['', 'Female', 'Male', 'Other', 'Not recorded'] %}
+              <option value="{{ opt }}" {% if (patient or {}).get('sex')==opt %}selected{% endif %}>{{ opt or '—' }}</option>
+            {% endfor %}
+          </select>
+        {% else %}
+          <input type="{{ 'date' if 'date' in key or key=='dob' else 'text' }}"
+                 name="{{ key }}" value="{{ (patient or {}).get(key, '') }}">
+        {% endif %}
+      </label>
+      {% endfor %}
+    </div>
+    <p class="hint">The RNA quality figure matters for the fusion half: it
+      cannot be computed from the sequencing data, and it is the best
+      predictor of whether a negative fusion result means anything.</p>
+  </section>
+
+  <section class="card">
+    <h2>The kit</h2>
+    <div class="fields">
+      <label><span>Choose a known hybrid kit</span>
+        <select id="kitpair">
+          <option value="">&mdash; set each half myself &mdash;</option>
+          {% for p in (hybrid_pairs or []) %}
+            <option value="{{ p.dna }}|{{ p.rna }}">{{ p.name }} ({{ p.manufacturer }})</option>
+          {% endfor %}
+        </select></label>
+      <label><span>Output directory</span>
+        <input name="output_dir" required
+               value="{{ (form or {}).get('output_dir','') }}"
+               placeholder="{{ default_runs }}/CASE01"></label>
+      <label><span>Tumour site</span>
+        <select name="pcgr_tumour_site">
+          {% for code, label in (tumour_sites or []) %}
+            <option value="{{ code }}"
+              {% if (form or {}).get('pcgr_tumour_site')|string == code|string %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select></label>
+      <label><span>Threads</span>
+        <input name="threads" type="number" min="1"
+               value="{{ (form or {}).get('threads','8') }}"></label>
+    </div>
+    <p class="hint">Choosing a known kit fills in both panel profiles below.
+      The tumour site is used by both halves: it decides which evidence
+      counts as on-label.</p>
+  </section>
+
+  <section class="card">
+    <h2>DNA half &mdash; variants</h2>
+    <div class="fields">
+      <label><span>DNA panel profile</span>
+        <select name="dna_panel" id="dna-panel">
+          <option value="">&mdash; none &mdash;</option>
+          {% for p in (dna_panels or []) %}
+            <option value="{{ p.id }}"
+              {% if (form or {}).get('dna_panel') == p.id %}selected{% endif %}>{{ p.name }}</option>
+          {% endfor %}
+        </select></label>
+      <label><span>Panel BED (target regions)</span>
+        <input name="panel_bed" value="{{ (form or {}).get('panel_bed','') }}"></label>
+      <label><span>Input directory (DNA FASTQs)</span>
+        <input name="dna_input_dir" value="{{ (form or {}).get('dna_input_dir','') }}"></label>
+      <label><span>Sample name</span>
+        <input name="dna_sample" value="{{ (form or {}).get('dna_sample','') }}"></label>
+      <label><span>Read 1 FASTQ</span>
+        <input name="dna_r1" value="{{ (form or {}).get('dna_r1','') }}"></label>
+      <label><span>Read 2 FASTQ</span>
+        <input name="dna_r2" value="{{ (form or {}).get('dna_r2','') }}"></label>
+    </div>
+    <label class="check"><input type="checkbox" name="dna_auto_discover"
+      {% if (form or {}).get('dna_auto_discover') %}checked{% endif %}>
+      Auto-discover the DNA FASTQ pair in that directory</label>
+    <p class="hint">Resources left blank &mdash; COSMIC, dbSNP, gnomAD, the
+      panel of normals, the PCGR bundle &mdash; are filled in from what is
+      installed, exactly as on the DNA form.</p>
+  </section>
+
+  <section class="card">
+    <h2>RNA half &mdash; fusions</h2>
+    <div class="fields">
+      <label><span>RNA panel profile</span>
+        <select name="rna_panel" id="rna-panel">
+          <option value="">&mdash; none &mdash;</option>
+          {% for p in (rna_panels or []) %}
+            <option value="{{ p.id }}"
+              {% if (form or {}).get('rna_panel') == p.id %}selected{% endif %}>{{ p.name }}</option>
+          {% endfor %}
+        </select></label>
+      <label><span>Input directory (RNA FASTQs)</span>
+        <input name="rna_input_dir" value="{{ (form or {}).get('rna_input_dir','') }}"></label>
+      <label><span>Sample name</span>
+        <input name="rna_sample" value="{{ (form or {}).get('rna_sample','') }}"></label>
+      <label><span>Read 1 FASTQ</span>
+        <input name="rna_r1" value="{{ (form or {}).get('rna_r1','') }}"></label>
+      <label><span>Read 2 FASTQ</span>
+        <input name="rna_r2" value="{{ (form or {}).get('rna_r2','') }}"
+               placeholder="blank for a single-end library"></label>
+      <label><span>Annotation GTF</span>
+        <input name="gtf"
+               value="{{ (form or {}).get('gtf') or (defaults or {}).get('gtf','') }}"></label>
+      <label><span>STAR index</span>
+        <input name="star_index"
+               value="{{ (form or {}).get('star_index') or (defaults or {}).get('star_index','') }}"></label>
+    </div>
+    <label class="check"><input type="checkbox" name="rna_auto_discover"
+      {% if (form or {}).get('rna_auto_discover') %}checked{% endif %}>
+      Auto-discover the RNA FASTQ pair in that directory</label>
+    <p class="hint">If the DNA and RNA FASTQs sit in the same directory,
+      name the files explicitly rather than using auto-discover &mdash;
+      otherwise each half will pick up the other&rsquo;s reads.</p>
+  </section>
+
+  <div class="actions">
+    <button type="submit" class="button">Queue both runs</button>
+    <a href="{{ url_for('choose_pathway') }}">Back</a>
+  </div>
+</form>
+
+<script>
+// Selecting a known kit fills in both halves. A convenience only: the
+// server validates each half's profile against its own library type, so a
+// DNA profile cannot end up on the RNA run whatever the browser did.
+(function () {
+  var pair = document.getElementById('kitpair');
+  var dna = document.getElementById('dna-panel');
+  var rna = document.getElementById('rna-panel');
+  if (!pair || !dna || !rna) { return; }
+  pair.addEventListener('change', function () {
+    if (!pair.value) { return; }
+    var halves = pair.value.split('|');
+    dna.value = halves[0];
+    rna.value = halves[1];
+  });
+})();
+</script>
+
+{% endblock %}

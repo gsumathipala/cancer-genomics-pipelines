@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 install_pipeline.py
 ===================
-Install the cancer DNA pipeline and everything it needs on a fresh machine.
+Install the Cancer Genomics Pipelines and everything it needs on a fresh machine.
 
 WHAT THIS IS FOR
 ----------------
@@ -204,6 +205,10 @@ MSI_MODELS_URL = ("https://codeload.github.com/niu-lab/msisensor2/"
 MSI_MODELS_MEMBER = "msisensor2-master/models_hg38"
 
 PIPELINE_ENV = "cancer_pipeline"
+# The RNA branch's environment. Separate from cancer_pipeline on purpose --
+# see environment-rna.yml for why mixing STAR and Arriba into a solve that
+# pins GATK's JDK range is asking for the pin nobody is watching to give.
+RNA_ENV = "cancer_rna"
 PCGR_ENV = "pcgr"
 PCGRR_ENV = "pcgrr"
 
@@ -619,6 +624,194 @@ def step_reference(args):
         LOG.fail("bwa-mem2 index failed")
         return False
     LOG.ok("bwa-mem2 index built")
+    return True
+
+
+# =============================================================================
+# THE RNA BRANCH
+# =============================================================================
+# Three steps, all optional: a machine that only runs DNA panels should not
+# pay 30 GB and an hour of CPU for an index it will never open. They are in
+# STEPS but excluded from the default run, so `--only rna-envs gencode
+# star-index` is the deliberate act that installs them.
+#
+# The order matters and is enforced by the step list: the environment holds
+# STAR, the GTF is what the index is built from, and the index needs both.
+
+# GENCODE's primary-assembly annotation. Chosen over the Ensembl GTF for one
+# concrete reason: GENCODE writes UCSC-style contig names (chr1, chrM), which
+# match the hg38 this installer already puts on disk. The Ensembl equivalent
+# writes 1 and MT, and a GTF whose contigs do not match the genome produces a
+# STAR index over nothing -- the same class of silent failure as the COSMIC
+# contig renaming, one file along.
+# Pinned, not floating. A release is chosen when a bundle ships and stays
+# put: the annotation is baked into the STAR index, and a default that
+# drifted would mean two machines installed a week apart disagreed about
+# which transcripts exist. check_db_updates.py reports when a newer one is
+# out and says what upgrading costs; it never upgrades by itself.
+GENCODE_RELEASE_DEFAULT = "50"
+GENCODE_URL = ("https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/"
+               "release_{release}/gencode.v{release}.primary_assembly."
+               "annotation.gtf.gz")
+
+
+def gencode_dir(args):
+    return os.path.join(args.data_dir, "references", "gencode")
+
+
+def gencode_gtf_path(args):
+    """Where the uncompressed GTF lives, for the run to point at."""
+    return os.path.join(gencode_dir(args),
+                        f"gencode.v{args.gencode_release}."
+                        f"primary_assembly.annotation.gtf")
+
+
+def star_index_dir(args):
+    """
+    Where the STAR index lives, named by read length.
+
+    Read length is in the directory name because it is what makes two
+    indexes different and otherwise indistinguishable on disk. An index
+    built for 100 bp reads used on 150 bp reads works and quietly loses
+    junction sensitivity; a laboratory running two read lengths needs two
+    indexes and needs to be able to tell them apart.
+    """
+    return os.path.join(args.data_dir, "references",
+                        f"star_hg38_{args.rna_read_length}")
+
+
+def step_rna_envs(args):
+    """The cancer_rna environment, from environment-rna.yml."""
+    if env_exists(RNA_ENV) and not args.force:
+        LOG.skip(f"environment '{RNA_ENV}' exists")
+        return True
+    yml = os.path.join(args.repo, "environment-rna.yml")
+    if not os.path.exists(yml):
+        LOG.fail(f"environment-rna.yml not found at {yml}; use --repo")
+        return False
+    code, _ = run([conda_exe(), "env", "create", "-f", yml],
+                  dry_run=args.dry_run, check=True)
+    if code != 0 and not args.dry_run:
+        return False
+    LOG.ok(f"environment '{RNA_ENV}' created")
+    return True
+
+
+def step_gencode(args):
+    """
+    The GENCODE annotation: what turns a breakpoint into a gene name.
+
+    Downloaded compressed and then kept UNCOMPRESSED, because STAR reads it
+    directly during the index build and Arriba reads it on every run. The
+    gzip is deleted afterwards -- it is 50 MB of duplicate, and leaving it
+    beside an identically named .gtf is an invitation to point a run at the
+    wrong one.
+    """
+    directory = gencode_dir(args)
+    if not args.dry_run:
+        os.makedirs(directory, exist_ok=True)
+
+    gtf = gencode_gtf_path(args)
+    if os.path.exists(gtf) and not args.force:
+        LOG.skip(f"GENCODE v{args.gencode_release} present "
+                 f"({human(os.path.getsize(gtf))})")
+        return True
+
+    url = GENCODE_URL.format(release=args.gencode_release)
+    archive = gtf + ".gz"
+    if not download(url, archive, dry_run=args.dry_run):
+        LOG.fail(f"could not download GENCODE v{args.gencode_release}. "
+                 f"Check the release number exists at "
+                 f"https://www.gencodegenes.org/human/releases.html")
+        return False
+    if args.dry_run:
+        LOG.info(f"would decompress {archive}")
+        return True
+
+    LOG.info("decompressing the annotation (STAR and Arriba read it "
+             "uncompressed)")
+    try:
+        import gzip
+        with gzip.open(archive, "rb") as src, open(gtf, "wb") as dst:
+            shutil.copyfileobj(src, dst, length=8 * 1024 * 1024)
+    except OSError as exc:
+        LOG.fail(f"could not decompress {archive}: {exc}")
+        return False
+    os.remove(archive)
+
+    # The check that matters. A GTF whose contigs are named the Ensembl way
+    # against a UCSC-named genome builds an index over nothing, and neither
+    # STAR nor Arriba says anything useful about it.
+    naming = None
+    try:
+        with open(gtf, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("#"):
+                    continue
+                naming = line.split("\t")[0]
+                break
+    except OSError:
+        naming = None
+    if naming and not naming.startswith("chr"):
+        LOG.warn(f"this GTF names its first contig {naming!r}, not "
+                 f"'chr...'. The installed hg38 uses UCSC naming, and a "
+                 f"mismatch yields a STAR index over nothing. Use the "
+                 f"GENCODE primary-assembly GTF rather than an Ensembl one.")
+    else:
+        LOG.ok(f"GENCODE v{args.gencode_release} installed "
+               f"({human(os.path.getsize(gtf))}), UCSC contig naming")
+    return True
+
+
+def step_star_index(args):
+    """
+    The STAR index: about an hour of CPU, ~32 GB of RAM, ~30 GB of disk.
+
+    The RNA equivalent of the bwa-mem2 index, and built the same way -- once,
+    into the shared reference directory, so every run reuses it. The
+    difference is that this one also bakes in the ANNOTATION and the READ
+    LENGTH, so align_rna.py records what it was built from and later runs
+    check that record. Without that, an index silently outliving the
+    annotation it was built from is undetectable.
+    """
+    gtf = gencode_gtf_path(args)
+    if not os.path.exists(gtf) and not args.dry_run:
+        LOG.fail(f"no GENCODE GTF at {gtf} -- run the 'gencode' step first")
+        return False
+
+    fasta = os.path.join(args.data_dir, "references", "hg38",
+                         "Homo_sapiens_assembly38.fasta")
+    if not os.path.exists(fasta) and not args.dry_run:
+        LOG.fail(f"no genome at {fasta} -- run the 'ref' step first")
+        return False
+
+    index = star_index_dir(args)
+    sentinel = os.path.join(index, "SAindex")
+    if os.path.exists(sentinel) and not args.force:
+        LOG.skip(f"STAR index present ({index})")
+        return True
+
+    script = os.path.join(args.repo, "align_rna.py")
+    if not os.path.exists(script):
+        LOG.fail(f"align_rna.py not found at {script}; use --repo")
+        return False
+
+    LOG.info(f"building the STAR index for {args.rna_read_length} bp reads "
+             f"-- about an hour, ~32 GB RAM, ~30 GB disk")
+    code, _ = env_run(RNA_ENV, [
+        "python", script, "--build-index",
+        "--reference", fasta,
+        "--gtf", gtf,
+        "--read-length", str(args.rna_read_length),
+        "--star-index", index,
+        "--threads", str(args.threads),
+    ] + (["--dry-run"] if args.dry_run else []), dry_run=args.dry_run)
+    if args.dry_run:
+        return True
+    if code != 0:
+        LOG.fail("STAR index build failed")
+        return False
+    LOG.ok(f"STAR index built ({index})")
     return True
 
 
@@ -1133,12 +1326,12 @@ def step_code(args):
 
 def step_manpage(args):
     """The man page, into the user's own man path."""
-    src = os.path.join(args.repo, "cancer-dna-pipeline.1")
+    src = os.path.join(args.repo, "cancer-genomics-pipelines.1")
     if not os.path.exists(src):
         LOG.skip("no man page in the repo")
         return True
     dest_dir = os.path.expanduser("~/.local/share/man/man1")
-    dest = os.path.join(dest_dir, "cancer-dna-pipeline.1")
+    dest = os.path.join(dest_dir, "cancer-genomics-pipelines.1")
     if args.dry_run:
         LOG.info(f"(dry run) would install {src} -> {dest}")
         return True
@@ -1146,7 +1339,7 @@ def step_manpage(args):
     shutil.copyfile(src, dest)
     os.chmod(dest, 0o644)
     LOG.ok(f"man page installed ({dest})")
-    LOG.info("read it with: man cancer-dna-pipeline")
+    LOG.info("read it with: man cancer-genomics-pipelines")
     return True
 
 
@@ -1266,11 +1459,26 @@ def step_verify(args):
             LOG.fail("the pipeline script failed to start")
             ok = False
 
-    # The pipeline imports these from beside itself, late in a run: PCGR at
-    # step 13 and the coverage check at step 12. A bundle missing one fails
-    # after the hours, not before them.
+    # The pipeline imports these from beside itself: PCGR at step 13, the
+    # coverage check at step 12, and the panel profiles during argument
+    # parsing. A bundle missing one of the first two fails after the hours,
+    # not before them.
     for helper, what in (("pcgr_report.py", "clinical report"),
-                         ("coverage_report.py", "coverage check")):
+                         ("coverage_report.py", "coverage check"),
+                         # Imported at parse time rather than late in a
+                         # run, so its absence is caught immediately -- but
+                         # only when --panel is used, which means a bundle
+                         # missing it looks fine until the day somebody
+                         # names an assay.
+                         ("panel_profiles.py", "panel profiles"),
+                         # The RNA branch. Checked even when the branch is
+                         # not installed: these are code, they travel with
+                         # the bundle, and a missing one is a bundle
+                         # problem rather than an installation choice.
+                         ("align_rna.py", "RNA alignment"),
+                         ("fusion_calling.py", "RNA fusion calling"),
+                         ("rna_qc_report.py", "RNA library QC"),
+                         ("fusion_report.py", "fusion report")):
         path = os.path.join(args.repo, helper)
         if not os.path.exists(path):
             LOG.fail(f"{helper} missing -- the {what} cannot run")
@@ -1283,6 +1491,31 @@ def step_verify(args):
         else:
             LOG.fail(f"{helper} failed to start")
             ok = False
+
+    # The RNA branch, reported as three separate facts rather than one
+    # verdict: an environment without an index is a normal intermediate
+    # state during setup, and a GTF without an index is what you have while
+    # the index is still building. Saying "RNA not installed" would hide
+    # which of the three is missing.
+    rna_env_ok = env_exists(RNA_ENV)
+    gtf = gencode_gtf_path(args)
+    index = os.path.join(star_index_dir(args), "SAindex")
+    if rna_env_ok or os.path.exists(gtf) or os.path.exists(index):
+        LOG.info("RNA branch:")
+        for label, present, hint in (
+                (f"environment '{RNA_ENV}'", rna_env_ok,
+                 "--only rna-envs"),
+                (f"GENCODE v{args.gencode_release} annotation",
+                 os.path.exists(gtf), "--only gencode"),
+                (f"STAR index for {args.rna_read_length} bp reads",
+                 os.path.exists(index), "--only star-index")):
+            if present:
+                LOG.ok(f"  {label}")
+            else:
+                LOG.warn(f"  {label} missing -- install it with {hint}")
+    else:
+        LOG.info("RNA branch not installed (--with-rna adds it; needed only "
+                 "for fusion detection from RNA panels)")
 
     # Is the installed code this bundle's code? --check is where someone
     # asks "is this machine current?", and until now that question was only
@@ -1343,16 +1576,32 @@ STEPS = [
     ("pcgr-data", "PCGR bundle and VEP cache", step_pcgr_data),
     ("msi-models", "MSIsensor2 models for tumour-only MSI", step_msi_models),
     ("cosmic", "Import and rename a COSMIC VCF", step_cosmic),
+    # The RNA branch. OPT-IN -- see OPTIONAL_STEPS below.
+    ("rna-envs", "Create the cancer_rna environment (RNA branch)",
+     step_rna_envs),
+    ("gencode", "GENCODE annotation GTF (RNA branch)", step_gencode),
+    ("star-index", "STAR index for RNA alignment (RNA branch)",
+     step_star_index),
     ("code", "Install or update the pipeline scripts", step_code),
     ("man", "Install the man page", step_manpage),
     ("verify", "Verify the installation", step_verify),
 ]
 
 
+# Steps a default install does NOT run. The RNA branch costs another
+# environment, a 1.5 GB annotation and a ~30 GB index that takes an hour of
+# CPU to build, and a laboratory running only DNA panels should not pay any
+# of it by accident. They are installed by asking for them:
+#
+#     python3 install_pipeline.py --with-rna
+#     python3 install_pipeline.py --only rna-envs gencode star-index
+OPTIONAL_STEPS = frozenset({"rna-envs", "gencode", "star-index"})
+
+
 def build_parser():
     names = ", ".join(name for name, _d, _f in STEPS)
     parser = argparse.ArgumentParser(
-        description="Install the cancer DNA pipeline and its dependencies.",
+        description="Install the Cancer Genomics Pipelines and its dependencies.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"Steps, in order: {names}\n\n"
                f"Re-running is safe: each step checks first and skips what is "
@@ -1371,6 +1620,26 @@ def build_parser():
                              "is unavailable.")
     parser.add_argument("--only", nargs="+", metavar="STEP", default=None,
                         help="Run only these steps.")
+    parser.add_argument("--with-rna", action="store_true",
+                        help="Also install the RNA branch: the cancer_rna "
+                             "environment, the GENCODE annotation and a "
+                             "STAR index. Roughly 32 GB more and an extra "
+                             "hour of CPU for the index, so it is left out "
+                             "of a default install. Needed only for fusion "
+                             "detection from RNA panels -- see RNA.md.")
+    parser.add_argument("--rna-read-length", type=int, default=150,
+                        metavar="N",
+                        help="Read length the STAR index is built for; it "
+                             "sets STAR's --sjdbOverhang and names the index "
+                             "directory. An index built for one read length "
+                             "works on another and quietly loses junction "
+                             "sensitivity, so match your instrument.")
+    parser.add_argument("--gencode-release", default=GENCODE_RELEASE_DEFAULT,
+                        metavar="N",
+                        help="GENCODE release for the RNA annotation. "
+                             "Changing it after an index exists means "
+                             "rebuilding the index: the annotation is baked "
+                             "into it.")
     parser.add_argument("--skip", nargs="+", metavar="STEP", default=[],
                         help="Skip these steps.")
     parser.add_argument("--code-dir", default=None, metavar="DIR",
@@ -1450,12 +1719,24 @@ def main():
                   f"Valid: {', '.join(sorted(valid))}", file=sys.stderr)
             return 2
 
+    # The RNA branch is opt-in: named explicitly with --only, or asked for
+    # wholesale with --with-rna. Left out of a default run because it costs
+    # another environment, a 1.5 GB annotation and a ~30 GB index that takes
+    # an hour of CPU, none of which a DNA-only laboratory should pay for by
+    # accident.
+    wanted_optional = set()
+    if args.with_rna:
+        wanted_optional |= OPTIONAL_STEPS
+    if args.only:
+        wanted_optional |= (set(args.only) & OPTIONAL_STEPS)
+
     selected = [s for s in STEPS
                 if (args.only is None or s[0] in args.only)
-                and s[0] not in args.skip]
+                and s[0] not in args.skip
+                and (s[0] not in OPTIONAL_STEPS or s[0] in wanted_optional)]
 
     code_dir, code_source = resolve_code_dir(args)
-    print(f"{LOG._c(Log.BOLD, 'Cancer DNA pipeline installer')}")
+    print(f"{LOG._c(Log.BOLD, 'Cancer Genomics Pipelines installer')}")
     print(f"  repo     : {args.repo}")
     print(f"  data dir : {args.data_dir}")
     if os.path.abspath(code_dir) != os.path.abspath(args.repo):

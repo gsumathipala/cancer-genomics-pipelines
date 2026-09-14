@@ -11,6 +11,9 @@ webapp/webapp_runs/
 # Useful to keep on disk, never something to commit.
 .bundle-backup-*/
 
+# Orchestrator logs, written beside wherever it was run from.
+pipeline_logs/
+
 # Pipeline outputs
 *.bam
 *.bai

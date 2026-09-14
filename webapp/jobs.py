@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 jobs.py
 =======
@@ -73,13 +74,18 @@ class Job:
     """One pipeline run: its parameters, its process, and its progress."""
 
     def __init__(self, job_id, run_dir, script, argv, patient, meta,
-                 pcgr_form=None):
+                 pcgr_form=None, assay="dna"):
         self.id = job_id
         self.run_dir = run_dir
         self.script = script
         self.argv = argv
         self.patient = patient
         self.meta = meta
+        # "dna" or "rna". Decides which conda environment the job runs in,
+        # whether the PCGR follow-up applies at all (it does not on RNA --
+        # PCGR is a somatic SNV reporter and has nothing to say about a
+        # fusion), and which report the UI offers.
+        self.assay = assay if assay in ("dna", "rna") else "dna"
         # Settings for the PCGR follow-up, or None to skip it. Kept as the
         # raw form so build_pcgr_argv() stays the single place that knows
         # how the report is invoked.
@@ -116,6 +122,7 @@ class Job:
             return {
                 "id": self.id,
                 "status": self.status,
+                "assay": self.assay,
                 # The report phase has no step number of its own: the
                 # pipeline's count is what the log shows, and the UI shows
                 # the bar working rather than a step that does not exist.
@@ -159,7 +166,18 @@ class Job:
                 # start_new_session puts the pipeline in its own process
                 # group; cancel() then signals the whole group so GATK's
                 # Java child processes go too.
-                pipeline_env = find_conda_env(PIPELINE_ENV_NAME)
+                # DNA jobs run in cancer_pipeline, RNA jobs in
+                # cancer_rna. Picked from the job rather than from the
+                # script path so an operator running a custom script still
+                # gets the environment their assay needs.
+                env_name = (RNA_ENV_NAME if self.assay == "rna"
+                            else PIPELINE_ENV_NAME)
+                pipeline_env = find_conda_env(env_name)
+                if pipeline_env is None:
+                    log.write(f"### conda environment '{env_name}' not "
+                              f"found; running with the current "
+                              f"interpreter's environment\n")
+                    log.flush()
                 self._proc = subprocess.Popen(
                     self.argv,
                     stdout=subprocess.PIPE,
@@ -250,14 +268,20 @@ class Job:
                 "[PCGR]   export PCGR_PYTHON=~/miniconda3/envs/pcgr/bin/python\n")
             return
 
-        manifest = latest_manifest(output_dir)
+        manifest = latest_manifest(output_dir, self.assay)
         if manifest is None:
             self.pcgr_status = "skipped: no run manifest found"
-            self._log_pcgr("[PCGR] Skipped: no pipeline manifest in "
-                           f"{output_dir}.\n")
+            self._log_pcgr(f"[PCGR] Skipped: no {self.assay.upper()} run "
+                           f"manifest in {output_dir}.\n")
             return
 
-        argv, note = build_pcgr_argv(
+        # The two branches hand PCGR different molecular inputs -- a
+        # somatic VCF, or a fusion table -- so they build different
+        # commands. Everything after this point is shared: same
+        # environment, same streaming, same status reporting.
+        builder = (build_rna_pcgr_argv if self.assay == "rna"
+                   else build_pcgr_argv)
+        argv, note = builder(
             python_exe, os.path.dirname(self.script) or ".",
             manifest, self.pcgr_form, output_dir)
         if argv is None:
@@ -354,7 +378,8 @@ class JobManager:
         self._worker = None
         self._queue = deque()
 
-    def submit(self, script, argv, patient, meta, pcgr_form=None):
+    def submit(self, script, argv, patient, meta, pcgr_form=None,
+               assay="dna"):
         """Create a run directory, record the patient, and queue the job."""
         job_id = datetime.now().strftime("%Y%m%dT%H%M%S") + "-" + \
             uuid.uuid4().hex[:6]
@@ -368,7 +393,7 @@ class JobManager:
             json.dump(patient, fh, indent=2)
 
         job = Job(job_id, run_dir, script, argv, patient, meta,
-                  pcgr_form=pcgr_form)
+                  pcgr_form=pcgr_form, assay=assay)
         with self._lock:
             self._jobs[job_id] = job
             self._order.append(job_id)
@@ -426,7 +451,9 @@ class JobManager:
             except (OSError, json.JSONDecodeError):
                 continue
             snap = saved.get("job", {})
-            job = Job(entry, run_dir, "", [], patient, saved.get("meta", {}))
+            job = Job(entry, run_dir, "", [], patient, saved.get("meta", {}),
+                      assay=snap.get("assay")
+                      or saved.get("meta", {}).get("assay") or "dna")
             job.status = snap.get("status", "finished")
             job.returncode = snap.get("returncode")
             job.step = snap.get("step", 0)
@@ -568,6 +595,11 @@ def human_bytes(n):
 # already-activated env, and fails with "Required tools not found" otherwise.
 
 PIPELINE_ENV_NAME = "cancer_pipeline"
+# The RNA branch runs in its own environment: STAR and Arriba are not in
+# cancer_pipeline, and a job launched in the wrong one fails at the first
+# command with "STAR: not found" after the queue has already claimed the
+# machine. Job.assay decides which is activated.
+RNA_ENV_NAME = "cancer_rna"
 PCGR_ENV_NAME = "pcgr"
 
 
@@ -655,10 +687,38 @@ def find_pcgr_python(explicit=None):
     return env_python(find_conda_env(PCGR_ENV_NAME))
 
 
-def latest_manifest(output_dir):
-    """The newest pipeline manifest in output_dir, parsed, or None."""
-    paths = sorted(glob.glob(os.path.join(output_dir,
-                                          "pipeline_manifest_*.json")))
+def manifest_vcf(manifest):
+    """
+    The call set a DNA manifest points at -- the first one that EXISTS.
+
+    Order of preference is COSMIC-annotated, then filtered: the annotated
+    file carries the known-mutation identifiers and is the better input.
+    But preference is not availability. Naming the preferred file and then
+    testing only that one means a run whose COSMIC step was skipped -- no
+    COSMIC VCF configured, or the step failed -- reports "no VCF on disk"
+    while its filtered calls sit right there, which is a report lost to a
+    file that was never going to be written.
+    """
+    for key in ("cosmic_vcf", "filtered_vcf"):
+        path = (manifest or {}).get(key)
+        if path and os.path.exists(path):
+            return path
+    return None
+
+
+def latest_manifest(output_dir, assay="dna"):
+    """
+    The newest run manifest in output_dir, parsed, or None.
+
+    The two branches write differently named manifests -- the DNA engine
+    writes pipeline_manifest_*.json, the RNA engine rna_manifest_*.json --
+    so the pattern follows the assay. Before this was assay-aware, an RNA
+    run's report step found no pipeline manifest and skipped itself with
+    "no run manifest found", which was true and completely misleading.
+    """
+    pattern = ("rna_manifest_*.json" if assay == "rna"
+               else "pipeline_manifest_*.json")
+    paths = sorted(glob.glob(os.path.join(output_dir, pattern)))
     if not paths:
         return None
     try:
@@ -682,6 +742,26 @@ def find_coverage_reports(output_dir):
     return sorted(glob.glob(pattern))
 
 
+def find_rna_reports(output_dir, kind):
+    """
+    The per-sample RNA reports for a run: 'fusion' or 'qc'.
+
+    Globbed for the same reason the coverage reports are -- they are
+    written before the run manifest is finalised, and the point of the
+    library QC report in particular is to be readable while the run is
+    still going. An operator who can see at step 5 that the library failed
+    does not have to wait for step 6 to tell them the empty table means
+    nothing.
+    """
+    if not output_dir:
+        return []
+    pattern = {
+        "fusion": os.path.join(output_dir, "fusion_report", "*.fusions.html"),
+        "qc": os.path.join(output_dir, "rna_qc", "*.rna_qc.html"),
+    }.get(kind)
+    return sorted(glob.glob(pattern)) if pattern else []
+
+
 def build_pcgr_argv(python_exe, script_dir, manifest, form, output_dir):
     """
     Build the pcgr_report.py command for a finished run.
@@ -696,9 +776,11 @@ def build_pcgr_argv(python_exe, script_dir, manifest, form, output_dir):
 
     # COSMIC-annotated if the step ran, otherwise the filtered calls. Never
     # the SnpEff output: PCGR runs its own VEP and validates INFO fields.
-    vcf = manifest.get("cosmic_vcf") or manifest.get("filtered_vcf")
-    if not vcf or not os.path.exists(vcf):
-        return None, f"no filtered VCF on disk to report on ({vcf})"
+    vcf = manifest_vcf(manifest)
+    if not vcf:
+        return None, ("no variant calls on disk to report on (looked for "
+                      "the COSMIC-annotated and filtered VCFs named in the "
+                      "run manifest)")
 
     # PCGR rejects an input VCF with no VEP cache. The form refuses this
     # combination at submit time; this catches a job restored from an older
@@ -722,9 +804,32 @@ def build_pcgr_argv(python_exe, script_dir, manifest, form, output_dir):
         argv += ["--assay", form["pcgr_assay"]]
     if form.get("pcgr_tumour_site"):
         argv += ["--tumour-site", str(form["pcgr_tumour_site"])]
-    if form.get("pcgr_target_size_mb"):
-        argv += ["--effective-target-size-mb",
-                 str(form["pcgr_target_size_mb"])]
+    # The TMB denominator, and the one place it was still going wrong.
+    #
+    # This app produces the clinical report itself, in PCGR's own conda
+    # environment, AFTER the pipeline has exited -- so it does not inherit
+    # the footprint the pipeline measured from the target BED. Without
+    # this, a panel run through the web form reached PCGR with no target
+    # size at all and PCGR divided by its assumed 34 Mb: on a 2 Mb panel,
+    # a TMB roughly 17x too low, printed in a report as a number with no
+    # indication that anything was assumed.
+    #
+    # The form's own value wins when somebody typed one -- that is a
+    # considered figure, often callable bases from a validation, and a raw
+    # BED footprint is a cruder measure. Otherwise the pipeline's
+    # measurement is used, and only then PCGR's default.
+    #
+    # Note what is NOT passed: --panel. pcgr_report.py would apply the
+    # profile's estimate toggles for any flag absent from this command
+    # line, and an unticked checkbox is absent -- so a profile could turn
+    # back on an estimate the operator had just turned off.
+    target_size = form.get("pcgr_target_size_mb")
+    measured = (manifest.get("panel_profile") or {}).get(
+        "target_size_mb_measured")
+    if not target_size and measured:
+        target_size = measured
+    if target_size:
+        argv += ["--effective-target-size-mb", str(target_size)]
     for flag, key in (("--estimate-tmb", "pcgr_estimate_tmb"),
                       ("--estimate-msi", "pcgr_estimate_msi"),
                       ("--estimate-signatures", "pcgr_estimate_signatures")):
@@ -734,6 +839,180 @@ def build_pcgr_argv(python_exe, script_dir, manifest, form, output_dir):
     if not (manifest.get("normal") or
             (manifest.get("result") or {}).get("normal")):
         argv.append("--tumour-only")
+    return argv, None
+
+
+def build_rna_argv(python_exe, script, form):
+    """
+    Turn the submitted RNA form into a fusion_calling.py argv.
+
+    Separate from build_pipeline_argv() rather than a branch inside it,
+    for the same reason the engines are separate: almost nothing is shared.
+    The DNA builder's vocabulary -- intervals, padding, allele fractions,
+    known sites, panel of normals, PCGR -- has no meaning on this branch,
+    and a single builder threading two option sets through one function is
+    how an RNA run ends up with a --min-allele-fraction nobody reads.
+
+    As on the DNA side, only options the form exposes are emitted; anything
+    absent is left to the script's own defaults, so this wrapper never
+    quietly changes the engine's behaviour.
+    """
+    argv = [python_exe, script,
+            "--output-dir", form["output_dir"],
+            "--reference", form["reference"],
+            "--gtf", form["gtf"]]
+
+    # The panel is passed through as well as being applied to the form, for
+    # the same two reasons as on the DNA side: the run manifest then records
+    # the assay as data, and the profile carries settings the form has no
+    # field for (UMI layout, adapters, caller passthroughs).
+    if form.get("panel"):
+        argv += ["--panel", form["panel"]]
+    for extra in str(form.get("panel_file", "")).split():
+        argv += ["--panel-file", extra]
+
+    if form.get("star_index"):
+        argv += ["--star-index", form["star_index"]]
+    if form.get("reference_dir"):
+        argv += ["--reference-dir", form["reference_dir"]]
+    if form.get("read_length"):
+        argv += ["--read-length", str(form["read_length"])]
+    if form.get("arriba_resources"):
+        argv += ["--arriba-resources", form["arriba_resources"]]
+
+    if form.get("manifest"):
+        argv += ["--manifest", form["manifest"]]
+    else:
+        argv += ["--input-dir", form["input_dir"]]
+        if form.get("auto_discover"):
+            argv += ["--auto-discover"]
+        else:
+            argv += ["--sample", form["sample"], "--r1", form["r1"]]
+            # Single-end is legitimate here (Ion Torrent), so an absent R2
+            # is a library type rather than a missing field.
+            if form.get("r2"):
+                argv += ["--r2", form["r2"]]
+
+    if form.get("fusion_min_confidence"):
+        argv += ["--fusion-min-confidence", form["fusion_min_confidence"]]
+    if form.get("min_fusion_reads"):
+        argv += ["--min-fusion-reads", str(form["min_fusion_reads"])]
+    if form.get("strandedness"):
+        argv += ["--strandedness", form["strandedness"]]
+    if form.get("rna_min_reads_millions"):
+        argv += ["--rna-min-reads-millions",
+                 str(form["rna_min_reads_millions"])]
+    if form.get("rna_min_unique_mapped_pct"):
+        argv += ["--rna-min-unique-mapped-pct",
+                 str(form["rna_min_unique_mapped_pct"])]
+    if form.get("min_read_length"):
+        argv += ["--min-read-length", str(form["min_read_length"])]
+    if form.get("star_extra_args"):
+        argv += ["--star-extra-args", str(form["star_extra_args"])]
+    if form.get("arriba_extra_args"):
+        argv += ["--arriba-extra-args", str(form["arriba_extra_args"])]
+
+    if form.get("threads"):
+        argv += ["--threads", str(form["threads"])]
+    if form.get("dry_run"):
+        argv += ["--dry-run"]
+    if form.get("skip_steps"):
+        argv += ["--skip-steps"] + str(form["skip_steps"]).split()
+
+    # No PCGR options, and not for the DNA branch's reason. PCGR is a
+    # somatic SNV/indel reporter: it takes a VCF and has nothing whatever
+    # to say about a rearrangement. The RNA branch's interpretation layer
+    # is fusion_report.py, which the engine runs itself as step 6.
+    return argv
+
+
+def build_rna_pcgr_argv(python_exe, script_dir, manifest, form, output_dir):
+    """
+    Build the pcgr_report.py command for a finished RNA run.
+
+    PCGR 2.x accepts RNA fusions as a molecular input in their own right,
+    and requires a VCF only if you give it one -- so an RNA run gets a real
+    clinical interpretation (actionable fusions placed against the tumour
+    site) rather than only the pipeline's own ranked table.
+
+    THE COMBINED REPORT is the case worth having. When the RNA run was
+    linked to a DNA run on the form, the DNA library's filtered VCF is
+    passed alongside the fusions, and PCGR produces ONE report covering
+    both -- which is how a specimen is reported clinically, rather than as
+    two documents somebody has to reconcile by eye.
+
+    Returns (argv, note); argv is None when no report can be produced, and
+    note then says why in one line for the run log.
+    """
+    samples = manifest.get("samples") or {}
+    if not samples:
+        return None, "no samples recorded in the RNA manifest"
+
+    # One PCGR report per run, from the first sample. A batch of RNA
+    # samples is a batch of specimens, and merging their fusions into one
+    # report would attribute one specimen's finding to another.
+    sample = sorted(samples)[0]
+    record = samples[sample]
+    fusion_tsv = (record.get("fusion_report") or {}).get("pcgr_tsv")
+    if not fusion_tsv or not os.path.exists(fusion_tsv):
+        return None, ("no fusions cleared the confidence bar, so there is "
+                      "nothing for PCGR to interpret (it rejects an empty "
+                      "fusion file)")
+
+    if not form.get("pcgr_refdata_dir"):
+        return None, "no PCGR reference bundle configured for this run"
+
+    argv = [
+        python_exe, os.path.join(script_dir, "pcgr_report.py"),
+        "--input-rna-fusion", fusion_tsv,
+        "--output-dir", os.path.join(output_dir, "pcgr"),
+        "--sample-id", sample,
+        "--pcgr-refdata-dir", form["pcgr_refdata_dir"],
+    ]
+
+    # The DNA half of the same specimen, when the operator linked it.
+    #
+    # RESOLVED HERE, NOT AT SUBMIT TIME. On a hybrid panel both runs are
+    # queued together and the DNA run has not produced a VCF yet when the
+    # RNA run is created -- so a pairing captured at submit time would
+    # always be empty, and the combined report would silently become two
+    # separate ones. What is stored is the DNA run's output DIRECTORY; its
+    # manifest is read now, when the DNA run has actually finished.
+    paired_vcf = form.get("paired_vcf")
+    paired_normal = form.get("paired_normal")
+    paired_dir = form.get("paired_output_dir")
+    if not paired_vcf and paired_dir:
+        dna_manifest = latest_manifest(paired_dir, "dna")
+        if dna_manifest:
+            paired_vcf = manifest_vcf(dna_manifest)
+            paired_normal = dna_manifest.get("normal") or ""
+            if not paired_vcf:
+                print("[PCGR] the linked DNA run finished but left no "
+                      "variant calls on disk; reporting the fusions alone.")
+        else:
+            # The DNA half failed, was cancelled, or is still going. Report
+            # the fusions on their own rather than waiting or failing: half
+            # a result now beats no result.
+            print(f"[PCGR] the linked DNA run in {paired_dir} has no "
+                  f"manifest yet; reporting the fusions alone.")
+
+    if paired_vcf and os.path.exists(paired_vcf):
+        argv += ["--input-vcf", paired_vcf, "--lift-tags"]
+        if form.get("vep_dir"):
+            # Required only because a VCF is now present; a fusion-only
+            # report needs no VEP cache, there being nothing to annotate.
+            argv += ["--vep-dir", form["vep_dir"]]
+        else:
+            return None, ("the linked DNA run's VCF needs a VEP cache and "
+                          "none is configured; report the two runs "
+                          "separately")
+        if not paired_normal:
+            argv.append("--tumour-only")
+
+    if form.get("pcgr_tumour_site"):
+        argv += ["--tumour-site", str(form["pcgr_tumour_site"])]
+    if form.get("min_fusion_reads"):
+        argv += ["--fusion-min-split-reads", str(form["min_fusion_reads"])]
     return argv, None
 
 
@@ -770,6 +1049,22 @@ def build_pipeline_argv(python_exe, script, form):
                          "--normal-r1", form["normal_r1"],
                          "--normal-r2", form["normal_r2"]]
 
+    # The panel is passed through as well as being applied to the form.
+    # Two reasons, and neither is redundancy:
+    #   * the run manifest then records the assay as data -- which kit,
+    #     which chemistry, which caveats -- so a reader a year later can
+    #     see what the numbers belong to without this app's run record;
+    #   * a profile carries settings the form has no field for (UMI
+    #     layout, adapters, BQSR on a panel too small to fit it, caller
+    #     passthroughs), and the pipeline applies those itself.
+    # It cannot conflict with the form: the pipeline only fills in what its
+    # command line did not state, and everything the form exposes is
+    # stated below.
+    if form.get("panel"):
+        argv += ["--panel", form["panel"]]
+    for extra in str(form.get("panel_file", "")).split():
+        argv += ["--panel-file", extra]
+
     for flag, key in (("--cosmic", "cosmic"),
                       ("--dbsnp", "dbsnp"),
                       ("--germline-resource", "germline_resource"),
@@ -805,6 +1100,8 @@ def build_pipeline_argv(python_exe, script, form):
         argv += ["--min-depth", str(form["min_depth"])]
     if form.get("min_allele_fraction"):
         argv += ["--min-allele-fraction", str(form["min_allele_fraction"])]
+    if form.get("mutect2_extra_args"):
+        argv += ["--mutect2-extra-args", str(form["mutect2_extra_args"])]
 
     if form.get("threads"):
         argv += ["--threads", str(form["threads"])]

@@ -1,0 +1,285 @@
+{#- Created by Brainstorm, 2026. -#}
+{% extends "base.html" %}
+{% block title %}New RNA run &middot; Cancer Genomics Pipelines{% endblock %}
+{% block content %}
+
+<h1>New RNA fusion run</h1>
+
+{% if errors %}
+<div class="errors">
+  <strong>This run was not started:</strong>
+  <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<section class="card">
+  <p class="hint">This is the <strong>RNA branch</strong>: splice-aware
+    alignment with STAR, then fusion detection with Arriba. It does not call
+    SNVs or indels &mdash; that is the
+    <a href="{{ url_for('new_run') }}">DNA run</a> form &mdash; and it does
+    not quantify expression. A DNA and an RNA library from one specimen are
+    two runs that belong together; link them below.</p>
+  <p class="hint warn"><strong>The dangerous output on this branch is a
+    negative.</strong> A degraded FFPE RNA extraction produces a clean,
+    well-formed, empty fusion table that is indistinguishable from a
+    specimen carrying no fusion. Every run measures the library and says
+    whether an empty table may be read as a negative &mdash; record the
+    DV200/RIN below so that statement has the one number this pipeline
+    cannot compute.</p>
+</section>
+
+<form method="post" action="{{ url_for('submit_rna') }}" class="stack">
+
+  <section class="card">
+    <h2>Patient and specimen</h2>
+    <p class="hint">Stored with the run on this machine for the report only.
+    Never passed to the pipeline, so it cannot appear in tool output, logs
+    or manifests. Give at least a patient/MRN or a specimen ID.</p>
+    <div class="fields">
+      {% for key, label in patient_fields %}
+      <label>
+        <span>{{ label }}</span>
+        {% if key == 'notes' %}
+          <textarea name="{{ key }}" rows="2">{{ (patient or {}).get(key, '') }}</textarea>
+        {% elif key == 'sex' %}
+          <select name="sex">
+            {% for opt in ['', 'Female', 'Male', 'Other', 'Not recorded'] %}
+              <option value="{{ opt }}" {% if (patient or {}).get('sex')==opt %}selected{% endif %}>{{ opt or '—' }}</option>
+            {% endfor %}
+          </select>
+        {% elif key == 'rna_quality' %}
+          <input type="text" name="{{ key }}"
+                 value="{{ (patient or {}).get(key, '') }}"
+                 placeholder="e.g. DV200 62%">
+        {% else %}
+          <input type="{{ 'date' if 'date' in key or key=='dob' else 'text' }}"
+                 name="{{ key }}" value="{{ (patient or {}).get(key, '') }}">
+        {% endif %}
+      </label>
+      {% endfor %}
+    </div>
+    <p class="hint">DV200 / RIN is measured on the extracted RNA before
+      sequencing. Nothing here can recover it, and it is the best single
+      predictor of whether fusion detection worked &mdash; a negative
+      reported without it is hard to defend.</p>
+  </section>
+
+  <section class="card">
+    <h2>Assay / panel</h2>
+    <div class="fields">
+      <label><span>RNA panel profile</span>
+        <select name="panel" id="panel-select">
+          <option value="">&mdash; none (use the settings below as-is) &mdash;</option>
+          {% set ns = namespace(vendor='') %}
+          {% for p in (panels or []) %}
+            {% if p.manufacturer != ns.vendor %}
+              {% if ns.vendor %}</optgroup>{% endif %}
+              {% set ns.vendor = p.manufacturer %}
+              <optgroup label="{{ 'Generic (any manufacturer)' if p.manufacturer == 'any' else p.manufacturer }}">
+            {% endif %}
+            <option value="{{ p.id }}"
+              {% if (form or {}).get('panel') == p.id %}selected{% endif %}>
+              {{ p.name }}</option>
+          {% endfor %}
+          {% if ns.vendor %}</optgroup>{% endif %}
+        </select></label>
+      <label><span>Linked DNA run (optional)</span>
+        <select name="paired_run_id">
+          <option value="">&mdash; not linked &mdash;</option>
+          {% for r in (dna_runs or []) %}
+            <option value="{{ r.id }}"
+              {% if (form or {}).get('paired_run_id') == r.id %}selected{% endif %}>
+              {{ r.label }} · {{ r.status }}</option>
+          {% endfor %}
+        </select></label>
+    </div>
+    <p class="hint">Only RNA profiles are listed here. They set the library
+      floors that decide whether an empty result is a negative, and those
+      differ by an order of magnitude between an anchored-PCR panel and a
+      whole transcriptome. <a href="{{ url_for('panels_page') }}">What each
+      profile sets</a>.</p>
+    <div id="panel-preview" class="hint" hidden></div>
+  </section>
+
+  <section class="card">
+    <h2>Input</h2>
+    {% if roots %}
+      <p class="hint">Paths must sit inside:
+        {% for r in roots %}<code>{{ r }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    {% endif %}
+    <div class="fields">
+      <label><span>Output directory</span>
+        <input name="output_dir" required
+               value="{{ (form or {}).get('output_dir', '') }}"
+               placeholder="{{ default_runs }}/RNA01"></label>
+      <label><span>Input directory (FASTQs)</span>
+        <input name="input_dir" value="{{ (form or {}).get('input_dir','') }}"></label>
+      <label><span>QC manifest (optional)</span>
+        <input name="manifest" value="{{ (form or {}).get('manifest','') }}"
+               placeholder="reuse a fastq_qc_clean.py run"></label>
+      <label><span>Sample name</span>
+        <input name="sample" value="{{ (form or {}).get('sample','') }}"></label>
+      <label><span>Read 1 FASTQ</span>
+        <input name="r1" value="{{ (form or {}).get('r1','') }}"></label>
+      <label><span>Read 2 FASTQ</span>
+        <input name="r2" value="{{ (form or {}).get('r2','') }}"
+               placeholder="leave blank for a single-end library"></label>
+    </div>
+    <label class="check"><input type="checkbox" name="auto_discover"
+      {% if (form or {}).get('auto_discover') %}checked{% endif %}>
+      Auto-discover FASTQ pairs
+      <span class="hint inline">&mdash; every pair found is processed as its
+      own sample. There is no tumour/normal pairing on this branch: a fusion
+      is called from one library, so the DNA form&rsquo;s ambiguity about
+      what a second sample means does not arise here.</span></label>
+    <p class="hint">Read 2 may be left blank. Ion Torrent RNA libraries are
+      single-end, and STAR handles that &mdash; though every paired-end
+      assumption elsewhere in this bundle does not.</p>
+  </section>
+
+  <section class="card">
+    <h2>Reference data</h2>
+    <div class="fields">
+      <label><span>Genome FASTA</span>
+        <input name="reference" required
+               value="{{ (form or {}).get('reference') or (defaults or {}).get('reference','') }}"></label>
+      <label><span>Annotation GTF (GENCODE)</span>
+        <input name="gtf" required
+               value="{{ (form or {}).get('gtf') or (defaults or {}).get('gtf','') }}"></label>
+      <label><span>STAR index</span>
+        <input name="star_index" required
+               value="{{ (form or {}).get('star_index') or (defaults or {}).get('star_index','') }}"></label>
+      <label><span>Read length</span>
+        <input name="read_length" type="number" min="1"
+               value="{{ (form or {}).get('read_length') or (defaults or {}).get('read_length','') }}"></label>
+      <label><span>Arriba reference files (optional)</span>
+        <input name="arriba_resources"
+               value="{{ (form or {}).get('arriba_resources','') }}"
+               placeholder="found in the conda environment automatically"></label>
+    </div>
+    <p class="hint">These are filled in from what
+      <code>install_pipeline.py --with-rna</code> put on disk. The
+      <strong>STAR index bakes in the annotation and the read length</strong>:
+      an index built for 100&nbsp;bp reads works on 150&nbsp;bp reads and
+      quietly loses junction sensitivity, so the run checks the index&rsquo;s
+      build record against these values and says if they disagree.</p>
+    <p class="hint">Leave the Arriba files blank unless the run reports that
+      it could not find them. Without the <strong>blacklist</strong> in
+      particular, recurrent read-through artefacts are reported as
+      high-confidence fusions and the table fills with noise.</p>
+  </section>
+
+  <section class="card">
+    <h2>Fusion calling</h2>
+    <div class="fields">
+      <label><span>Minimum confidence</span>
+        <select name="fusion_min_confidence">
+          {% for c in ['low','medium','high'] %}
+            <option {% if (form or {}).get('fusion_min_confidence', 'medium')==c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select></label>
+      <label><span>Minimum supporting reads</span>
+        <input name="min_fusion_reads" type="number" min="1"
+               value="{{ (form or {}).get('min_fusion_reads','') }}"></label>
+      <label><span>Strandedness</span>
+        <select name="strandedness">
+          {% for s in ['unstranded','forward','reverse'] %}
+            <option {% if (form or {}).get('strandedness','unstranded')==s %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select></label>
+      <label><span>Library size floor (M reads)</span>
+        <input name="rna_min_reads_millions" type="number" step="0.1" min="0"
+               value="{{ (form or {}).get('rna_min_reads_millions','') }}"></label>
+      <label><span>Unique-mapping floor (%)</span>
+        <input name="rna_min_unique_mapped_pct" type="number" step="0.1" min="0"
+               value="{{ (form or {}).get('rna_min_unique_mapped_pct','') }}"></label>
+      <label><span>Minimum read length after trimming</span>
+        <input name="min_read_length" type="number" min="1"
+               value="{{ (form or {}).get('min_read_length','') }}"></label>
+    </div>
+    <p class="hint">The confidence bar decides what the report counts as
+      reportable. Calls below it are <em>marked, never dropped</em> &mdash; a
+      laboratory investigating a clinically expected fusion needs to see that
+      it was called weakly rather than to be told nothing was found.</p>
+    <p class="hint">The two floors are what the library QC verdict is
+      measured against. They come from the panel profile and differ by an
+      order of magnitude between chemistries: 2&nbsp;M reads is a normal,
+      adequate anchored-PCR library and a badly failed whole transcriptome.</p>
+  </section>
+
+  <section class="card">
+    <h2>Runtime</h2>
+    <div class="fields">
+      <label><span>Threads</span><input name="threads" type="number" min="1"
+             value="{{ (form or {}).get('threads','8') }}"></label>
+      <label><span>Skip steps</span><input name="skip_steps"
+             value="{{ (form or {}).get('skip_steps','') }}"
+             placeholder="qc align sort fusions rnaqc report"></label>
+    </div>
+    <label class="check"><input type="checkbox" name="dry_run"
+      {% if (form or {}).get('dry_run') %}checked{% endif %}>
+      Dry run &mdash; print the commands without executing anything</label>
+    <p class="hint warn">STAR loads the genome index into memory: expect
+      around 32&nbsp;GB of RAM for hg38. Runs are queued one at a time on
+      this machine, which is what keeps that from colliding with anything
+      else.</p>
+  </section>
+
+  <div class="actions">
+    <button type="submit" class="button">Start RNA run</button>
+    <a href="{{ url_for('index') }}">Cancel</a>
+  </div>
+</form>
+
+<script>
+// Live preview of the chosen RNA profile. As on the DNA form this only
+// SHOWS what a choice implies -- the server applies it again in
+// apply_panel_to_form(), because a value that exists only in a browser goes
+// missing the moment somebody posts from a script or leaves a tab open
+// while a profile changes.
+(function () {
+  var PANELS = {{ panel_settings|default('{}')|safe }};
+  var select = document.getElementById('panel-select');
+  var preview = document.getElementById('panel-preview');
+  if (!select || !preview) { return; }
+
+  var FIELDS = ['fusion_min_confidence', 'min_fusion_reads', 'strandedness',
+                'rna_min_reads_millions', 'rna_min_unique_mapped_pct',
+                'min_read_length'];
+
+  function apply() {
+    var chosen = PANELS[select.value];
+    if (!chosen) { preview.hidden = true; preview.textContent = ''; return; }
+    var settings = chosen.settings || {};
+    FIELDS.forEach(function (name) {
+      var input = document.querySelector('[name="' + name + '"]');
+      if (input && settings[name] !== undefined && settings[name] !== null) {
+        input.value = settings[name];
+      }
+    });
+    // Text nodes, not an HTML string: profile text can come from a JSON
+    // file somebody at the site wrote.
+    preview.textContent = '';
+    var head = document.createElement('strong');
+    head.textContent = chosen.summary || '';
+    preview.appendChild(head);
+    var lines = [];
+    if ((chosen.requires || []).length) {
+      lines.push('You must still supply: ' + chosen.requires.join('; ') + '.');
+    }
+    (chosen.notes || []).forEach(function (note) {
+      lines.push('• ' + note);
+    });
+    lines.forEach(function (text) {
+      preview.appendChild(document.createElement('br'));
+      preview.appendChild(document.createTextNode(text));
+    });
+    preview.hidden = false;
+  }
+
+  select.addEventListener('change', apply);
+  if (select.value) { apply(); }
+})();
+</script>
+
+{% endblock %}

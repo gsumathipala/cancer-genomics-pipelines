@@ -1,8 +1,11 @@
+{#- Created by Brainstorm, 2026. -#}
 {% extends "base.html" %}
-{% block title %}Run {{ job.id }} &middot; Cancer DNA Pipeline{% endblock %}
+{% block title %}Run {{ job.id }} &middot; Cancer Genomics Pipelines{% endblock %}
 {% block content %}
 
-<h1>Run <span class="mono">{{ job.id }}</span></h1>
+<h1>Run <span class="mono">{{ job.id }}</span>
+  {% if job.assay == 'rna' %}<span class="status queued">RNA fusions</span>
+  {% else %}<span class="status queued">DNA variants</span>{% endif %}</h1>
 
 {% if report_error %}
 <div class="errors"><strong>The report could not be generated:</strong>
@@ -40,6 +43,20 @@
     <button type="submit">Delete intermediates and free
       {{ human_bytes(cleanup.total) }}</button>
   </form>
+</section>
+{% endif %}
+{% if panel_label %}
+<section class="card">
+  <h2>Assay</h2>
+  <p class="hint"><strong>{{ panel_label }}</strong>{% if panel_chemistry %}
+    &mdash; {{ panel_chemistry }}{% endif %}. The profile set the run's
+    chemistry-dependent options; anything typed on the form overrode it.
+    <a href="{{ url_for('panels_page') }}">What this profile sets</a>.</p>
+  {% if panel_applied %}
+  <p class="hint">Filled in from the profile:
+    {% for k in panel_applied %}<code>{{ k }}</code>{% if not loop.last %},
+    {% endif %}{% endfor %}.</p>
+  {% endif %}
 </section>
 {% endif %}
 {% if auto_applied %}
@@ -99,13 +116,46 @@
     {% endif %}
     <a class="button ghost" href="{{ url_for('job_log', job_id=job.id) }}">Full log</a>
   </div>
-  <div class="actions" id="coverage">
-    {% for index, sample in coverage %}
-      <a class="button ghost" target="_blank"
-         href="{{ url_for('job_coverage', job_id=job.id, index=index) }}">
-        Coverage: {{ sample }}</a>
+  {% if artefact_groups %}
+  <div class="reports">
+    {% for gid, title, blurb, items in artefact_groups %}
+    <section class="card reportgroup {{ gid }}">
+      <h2>{{ title }}</h2>
+      <p class="hint">{{ blurb }}</p>
+      <ul class="filelist">
+        {% for it in items %}
+        <li>
+          <a class="filelink"
+             href="{{ url_for('job_file', job_id=job.id, artefact=it.id) }}"
+             {% if it.action == 'view' %}target="_blank" rel="noopener"{% endif %}>
+            <span class="filename">{{ it.label }}</span>
+            <span class="fileaction">{{ 'open' if it.action == 'view' else 'download' }}{% if it.size %} · {{ human_size(it.size) }}{% endif %}</span>
+          </a>
+          <div class="filewhat">{{ it.what }}</div>
+          {% if it.caution %}<div class="filecaution">{{ it.caution }}</div>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
     {% endfor %}
   </div>
+  {% endif %}
+
+  {% if artefact_absent %}
+  <section class="card">
+    <h2>Not produced by this run</h2>
+    <p class="hint">Listed rather than left out: a missing report reads as
+      &ldquo;nothing to report&rdquo; when it actually means &ldquo;never
+      measured&rdquo;.</p>
+    <ul>{% for n in artefact_absent %}<li class="hint">{{ n }}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+
+  {# The per-report button rows that used to live here are gone. They
+     duplicated the artefact list above, and they addressed files by
+     POSITION in a glob -- which shifts the moment the run writes another
+     sample's report, so a link could serve a different file than its
+     label. The list above addresses each file by a digest of its path. #}
   {% if not coverage and coverage_bed %}
     <p class="small" id="covhint">Target coverage against
       <code>{{ coverage_bed }}</code> is checked after alignment; the report

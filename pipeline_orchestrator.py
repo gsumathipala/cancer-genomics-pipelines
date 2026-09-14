@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 pipeline_orchestrator.py
 ========================
-Orchestrator that chains the three stages of the cancer DNA pipeline
-into a single command:
+Orchestrator that chains the Cancer Genomics Pipelines into a single
+command. How many stages that is depends on --assay: three for DNA, two for
+RNA, because the RNA engine does its own splice-aware alignment and stage 2
+cannot align RNA at all.
+
+DNA (--assay dna, the default):
 
     STAGE 1: fastq_qc_clean.py
              QC + adapter/poly-G trimming -> cleaned FASTQs + QC manifest.
@@ -19,6 +24,16 @@ into a single command:
              When a QC manifest is passed via --manifest, the "qc" step is
              auto-skipped and the cleaned reads from STAGE 1 are reused
              (no redundant re-QC).
+
+RNA (--assay rna):
+
+    STAGE 1: fastq_qc_clean.py -- the same stage, shared.
+    STAGE 2: SKIPPED, and forced so. bwa-mem2 cannot align across an
+             exon-exon junction; it would discard exactly the reads a
+             fusion is evidenced by, silently.
+    STAGE 3: fusion_calling.py
+             STAR (splice-aware, chimeric detection on) -> Arriba ->
+             library QC -> fusion report.
 
 THE HANDOFF MECHANISM
 ---------------------
@@ -131,6 +146,18 @@ SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPT_QC = os.path.join(SCRIPTS_DIR, "fastq_qc_clean.py")
 SCRIPT_ALIGN = os.path.join(SCRIPTS_DIR, "align_reads.py")
 SCRIPT_VARIANT = os.path.join(SCRIPTS_DIR, "comprehensive_variant_calling.py")
+# The RNA branch's stage 3. A different engine rather than a mode: every
+# step of the DNA one after alignment is DNA-specific, and several of them
+# are actively wrong on RNA -- see fusion_calling.py.
+SCRIPT_FUSION = os.path.join(SCRIPTS_DIR, "fusion_calling.py")
+
+# Which script, and what to call it in the log, per --assay.
+STAGE3 = {
+    "dna": (SCRIPT_VARIANT,
+            "STAGE 3: Variant Calling (Mutect2 + COSMIC + SnpEff)"),
+    "rna": (SCRIPT_FUSION,
+            "STAGE 3: Fusion Detection (STAR + Arriba)"),
+}
 
 
 def run_stage(script, args_str, tag, dry_run=False):
@@ -268,6 +295,43 @@ def main():
                    help="Directory containing a previous QC run. The newest "
                         "run_manifest_*.json in it is used for the handoff.")
 
+    # --- Assay ---
+    # Which pipeline stage 3 is. The DNA engine and the RNA engine take
+    # different arguments and produce different artefacts, and the QC stage
+    # in front of them is the same -- which is exactly why this is one
+    # switch rather than two scripts the operator picks between: a DNA+RNA
+    # specimen is two runs off one QC, and getting the second one wrong is
+    # a full run of wasted time.
+    a = parser.add_argument_group("assay")
+    a.add_argument("--assay", default="dna", choices=["dna", "rna"],
+                   help="Which stage 3 to run. 'dna' chains "
+                        "comprehensive_variant_calling.py (SNVs and indels); "
+                        "'rna' chains fusion_calling.py (fusions), and "
+                        "SKIPS STAGE 2 -- bwa-mem2 cannot align RNA, and the "
+                        "RNA engine does its own splice-aware alignment "
+                        "with STAR.")
+
+    # --- Panel / assay profile ---
+    # Stage 1 and stage 3 both understand --panel, and both must be given
+    # the SAME one: a chain whose QC extracted a UMI and whose caller was
+    # configured for a different chemistry is half-configured, and the half
+    # that is wrong is silent. Naming it once here is what makes that
+    # impossible to get wrong by hand.
+    p = parser.add_argument_group("panel / assay profile")
+    p.add_argument("--panel", default=None, metavar="ID",
+                   help="Panel profile for the whole chain. Appended to "
+                        "--stage1-args and --stage3-args (stage 2 has no "
+                        "panel-dependent settings), unless those already "
+                        "name a panel of their own. Run "
+                        "'python comprehensive_variant_calling.py "
+                        "--list-panels' to see what is available.")
+    p.add_argument("--panel-bed", default=None, metavar="BED",
+                   help="The kit's target BED, appended to --stage3-args as "
+                        "--panel-bed so it restricts the caller and drives "
+                        "the coverage report. DNA only -- an RNA run is "
+                        "scoped by its annotation (--gtf), and this is "
+                        "ignored with a warning under --assay rna.")
+
     # --- Runtime ---
     r = parser.add_argument_group("runtime")
     r.add_argument("--dry-run", action="store_true",
@@ -277,6 +341,55 @@ def main():
 
     args = parser.parse_args()
     dry_run = args.dry_run
+
+    # ---- Push the panel into the stages that understand it ----
+    # Appended rather than prepended, and only when the stage's own
+    # arguments do not already mention a panel: somebody who spelled it out
+    # per stage was being deliberate, and having this quietly add a second
+    # --panel would leave argparse taking the last one -- a setting decided
+    # by string order.
+    if args.panel:
+        for attr, flag_owner in (("stage1_args", "stage 1"),
+                                 ("stage3_args", "stage 3")):
+            current = getattr(args, attr) or ""
+            if not current.strip():
+                continue              # that stage is not running
+            if "--panel" in current:
+                print(f"[INFO] {flag_owner} already names a panel; "
+                      f"--panel {args.panel} not added to it.")
+                continue
+            setattr(args, attr, f"{current} --panel {args.panel}")
+    # ---- RNA: stage 2 is not merely unnecessary, it is wrong ----
+    # align_reads.py runs bwa-mem2, which cannot align across an exon-exon
+    # junction. Handed RNA it produces a BAM that opens, a mapping rate
+    # that looks only slightly low, and no junction-spanning reads at all --
+    # which is to say none of the reads that could evidence a fusion. So
+    # the RNA route does not offer stage 2 as a choice.
+    if args.assay == "rna":
+        if args.stage2_args and not args.skip_stage2:
+            print("[INFO] --assay rna: stage 2 (bwa-mem2) is skipped. It "
+                  "cannot align across exon-exon junctions, so it would "
+                  "discard exactly the reads a fusion is evidenced by. The "
+                  "RNA engine aligns with STAR itself.")
+        args.skip_stage2 = True
+
+    if args.panel_bed:
+        if args.assay == "rna":
+            # fusion_calling.py has no --panel-bed, and appending one would
+            # abort stage 3 on an unrecognised argument after stage 1 had
+            # already run. It is not an oversight in that script: an RNA run
+            # is not restricted by a target BED. The transcriptome
+            # annotation does that job, and it is --gtf.
+            print("[WARN] --panel-bed is a DNA option and was ignored: an "
+                  "RNA run is scoped by the annotation (--gtf in "
+                  "--stage3-args), not by a target BED.")
+        else:
+            current = args.stage3_args or ""
+            if "--panel-bed" in current or "--intervals" in current:
+                print("[INFO] stage 3 already names a target BED; "
+                      "--panel-bed not added to it.")
+            else:
+                args.stage3_args = f"{current} --panel-bed {args.panel_bed}"
 
     # ---- Validate combinatorial inputs ----
     # Stage 3 always needs a QC manifest. That manifest comes from either:
@@ -427,11 +540,16 @@ def main():
                     qc_root = _data["output_dir"]
             v3 += ["--input-dir", os.path.join(qc_root, "cleaned_fastq")]
     v3 += ["--manifest", qc_manifest]
-    code = run_stage(SCRIPT_VARIANT, shlex.join(v3),
-                     "STAGE 3: Variant Calling (Mutect2 + COSMIC + SnpEff)",
+    stage3_script, stage3_label = STAGE3[args.assay]
+    if not os.path.exists(stage3_script) and not dry_run:
+        print(f"[FATAL] {os.path.basename(stage3_script)} is not beside the "
+              f"orchestrator. The scripts resolve relative to each other, so "
+              f"they have to stay in one directory.")
+        sys.exit(1)
+    code = run_stage(stage3_script, shlex.join(v3), stage3_label,
                      dry_run=dry_run)
     if code != 0:
-        print("[FATAL] Stage 3 (variant calling) failed.")
+        print(f"[FATAL] Stage 3 ({args.assay.upper()}) failed.")
         sys.exit(1)
 
     # =====================================================================

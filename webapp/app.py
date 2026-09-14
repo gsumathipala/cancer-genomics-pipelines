@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 app.py
 ======
-Flask front end for the cancer DNA pipeline: submit a run with patient
+Flask front end for the Cancer Genomics Pipelines: submit a run with patient
 details, watch it progress, and produce a PDF report from the result.
 
 RUNNING IT
@@ -59,14 +60,26 @@ try:
 except ImportError:  # pragma: no cover - dependency guidance
     sys.exit("Flask is not installed. Install it with:  pip install flask")
 
+import artefacts                                        # noqa: E402
 import jobs                                              # noqa: E402
 import maintenance                                        # noqa: E402
 from jobs import JobManager, build_pipeline_argv          # noqa: E402
 from report import (PATIENT_FIELDS, build_report,         # noqa: E402
                     find_pcgr_outputs, load_pipeline_manifest,
                     patient_warnings)
+from rna_report import build_rna_report                   # noqa: E402
 
 SCRIPT_VARIANT = os.path.join(PIPELINE_DIR, "comprehensive_variant_calling.py")
+
+# Panel profiles live beside the pipeline scripts. Imported optionally: the
+# app is fully usable without them (every setting a profile carries is also
+# an ordinary form field), so a bundle missing the module loses the panel
+# dropdown rather than the ability to start a run.
+sys.path.insert(0, PIPELINE_DIR)
+try:
+    import panel_profiles                              # noqa: E402
+except ImportError:                                     # pragma: no cover
+    panel_profiles = None
 
 app = Flask(__name__)
 
@@ -126,6 +139,54 @@ def index():
 
 
 @app.route("/new")
+def choose_pathway():
+    """
+    The first question: which pipeline, or both.
+
+    WHY THIS PAGE EXISTS
+      Before it, the interface had two entry points in the navigation bar
+      and expected the operator to already know which one their assay
+      needed. That is a reasonable expectation of a bioinformatician and an
+      unreasonable one of a pathologist who has been handed a kit -- and it
+      handled the commonest modern case worst of all, because a hybrid
+      panel (TSO500, Oncomine Comprehensive, Archer) is ONE specimen whose
+      two libraries have to be submitted as two runs and then linked, from
+      memory, or the combined report never happens.
+
+      So the choice is asked once, in the operator's own vocabulary --
+      what am I looking for? -- rather than in the pipeline's.
+    """
+    return render_template("choose_pathway.html",
+                           hybrid_pairs=hybrid_panel_pairs())
+
+
+def hybrid_panel_pairs():
+    """
+    Profiles that are one half of a two-library kit, with their partner.
+
+    Read off the profiles' own pairs_with field, so a site that adds its
+    own hybrid kit gets it offered here without touching the app.
+    """
+    if panel_profiles is None:
+        return []
+    registry = panel_registry()
+    pairs = []
+    for profile in registry.values():
+        partner_id = panel_profiles.partner_id(profile)
+        if not partner_id or panel_profiles.assay_type(profile) != "dna":
+            continue                      # list each kit once, DNA side
+        partner = registry.get(partner_id)
+        if not partner:
+            continue
+        pairs.append({
+            "dna": profile["id"], "rna": partner["id"],
+            "name": profile["name"].split("(")[0].strip(),
+            "manufacturer": profile["manufacturer"],
+        })
+    return sorted(pairs, key=lambda p: (p["manufacturer"], p["name"]))
+
+
+@app.route("/new/dna")
 def new_run():
     return render_template("new_run.html",
                            patient_fields=PATIENT_FIELDS,
@@ -133,7 +194,652 @@ def new_run():
                            default_runs=app.config["RUNS_DIR"],
                            defaults=dict(discover_defaults(),
                                          **ANALYSIS_TOGGLES),
+                           panels=panel_options(),
+                           panel_settings=panel_settings_json(),
                            tumour_sites=TUMOUR_SITES)
+
+
+# ---------------------------------------------------------------------------
+# Panel profiles
+# ---------------------------------------------------------------------------
+# The form has a field for every setting a profile carries, which is
+# exactly the problem: filling in nine of them correctly, per kit, from
+# memory, is what a laboratory running four different assays gets wrong.
+# The dropdown names the assay instead, and the SERVER applies it -- see
+# apply_panel_to_form() for why the browser doing it as well is not enough.
+
+
+def panel_registry():
+    """Every known profile, or {} when the module is not importable."""
+    if panel_profiles is None:
+        return {}
+    try:
+        return panel_profiles.available_panels(
+            warn=lambda msg: app.logger.warning("panel profile: %s", msg))
+    except Exception:                     # noqa: BLE001 - never break the form
+        return {}
+
+
+def panel_options():
+    """
+    The dropdown's contents: (id, label, manufacturer) sorted for humans.
+
+    Generic shapes first -- they are where somebody with an unlisted kit
+    should start, and burying them under the vendor names makes the page
+    look as though only listed kits are supported.
+    """
+    options = []
+    for profile in panel_registry().values():
+        options.append({
+            "id": profile["id"],
+            "name": profile["name"],
+            "manufacturer": profile["manufacturer"],
+            "chemistry": profile["chemistry"],
+            "summary": profile.get("summary", ""),
+            "notes": profile.get("notes", []),
+            "requires": profile.get("requires", []),
+            "nominal_target_size_mb": profile.get("nominal_target_size_mb"),
+        })
+    options.sort(key=lambda o: (o["manufacturer"] != "any",
+                                o["manufacturer"].lower(), o["id"]))
+    return options
+
+
+def panel_settings_json():
+    """
+    Every profile's settings as JSON, for the form's live preview.
+
+    The browser uses this only to SHOW what a choice implies while the
+    operator is still deciding. It is not how the settings are applied --
+    that happens server-side in apply_panel_to_form(), because a value the
+    browser filled in is a value a stale page, a disabled script or a
+    scripted POST can silently omit.
+    """
+    return json.dumps({p["id"]: {"settings": p.get("settings", {}),
+                                 "notes": p.get("notes", []),
+                                 "requires": p.get("requires", []),
+                                 "summary": p.get("summary", "")}
+                       for p in panel_registry().values()})
+
+
+# Profile keys the form does not expose. They are still applied to the run,
+# via --panel on the pipeline's own command line, but there is no box to
+# fill in with them.
+_PANEL_KEYS_NOT_ON_FORM = frozenset({
+    "adapter_r1", "adapter_r2", "min_read_length", "cut_right", "correction",
+    "umi_loc", "umi_len", "umi_skip", "foldback_min_match",
+    "mutect2_extra_args", "skip_bqsr",
+})
+
+
+def apply_panel_to_form(form):
+    """
+    Fill the submitted form's blanks from the chosen profile, server-side.
+
+    This mirrors apply_resource_defaults(), and for the same reason: a
+    value that only ever existed in the browser is a value that can go
+    missing without anybody noticing. A page left open while the profile
+    changed, a script posting to /submit, a field cleared by accident --
+    each produces a submission that looks deliberate and is not.
+
+    A field the operator actually filled in is never touched, so the
+    precedence is the same one the command line uses: what you typed beats
+    the profile beats the default.
+
+    Returns the list of field names that were filled in, for the run
+    record, so it states what was added instead of leaving a later reader
+    to work it out from a command line.
+    """
+    panel_id = form.get("panel")
+    if not panel_id or panel_profiles is None:
+        return []
+    try:
+        profile = panel_profiles.resolve_panel(panel_id, panel_registry())
+    except Exception:                     # noqa: BLE001 - validated in submit
+        return []
+
+    # One BED, two fields: the run needs both a calling restriction and a
+    # coverage statement, and they are the same file in all but unusual
+    # laboratories. Asking for it twice is how one of them ends up empty.
+    applied = []
+    decided = []
+    bed = form.get("panel_bed") or form.get("intervals") or \
+        form.get("coverage_bed")
+    if bed:
+        for field in ("intervals", "coverage_bed"):
+            if not form.get(field):
+                form[field] = bed
+                applied.append(field)
+
+    for key, value in (profile.get("settings") or {}).items():
+        if value is None or key in _PANEL_KEYS_NOT_ON_FORM:
+            continue
+        if key in ("intervals", "coverage_bed"):
+            continue                      # handled above, from the BED field
+        if key == "skip_steps":
+            # Merged, never replaced: a profile that skips dedup and an
+            # operator who skipped qc must get a run that skips both.
+            current = [s for s in str(form.get("skip_steps", "")).split() if s]
+            added = [s for s in value if s not in current]
+            if added:
+                form["skip_steps"] = " ".join(current + added)
+                applied.append("skip_steps")
+            continue
+        if isinstance(value, bool):
+            # Checkbox semantics: an unticked box is simply absent from the
+            # submission, so a profile can only ever turn one ON. The
+            # decision is RECORDED either way, so apply_resource_defaults()
+            # does not helpfully turn back on something this profile
+            # deliberately left off.
+            #
+            # And only for a submission that did NOT render the form. When
+            # the form was rendered, its script has already ticked the
+            # boxes this profile wants, the operator has seen them, and
+            # what came back is their decision -- re-ticking one here would
+            # make it impossible to untick.
+            decided.append(key)
+            if value and not form.get(key) and not form.get("form_rendered"):
+                form[key] = "on"
+                applied.append(key)
+            continue
+        if not form.get(key):
+            form[key] = str(value)
+            applied.append(key)
+    form["_panel_toggles"] = " ".join(decided)
+    return applied
+
+
+# ---------------------------------------------------------------------------
+# The RNA branch
+# ---------------------------------------------------------------------------
+# A separate form, a separate submit handler and a separate argv builder,
+# mirroring the separation in the scripts themselves. Almost nothing is
+# shared: the DNA form's vocabulary -- target intervals, padding, allele
+# fractions, known sites, panel of normals, PCGR -- has no meaning on an RNA
+# run, and one form carrying both would be a form most of whose fields are
+# inapplicable whichever assay you picked.
+#
+# What IS shared is deliberate: the patient details, the path safety, the
+# serial job queue and the panel registry. A DNA and an RNA library from one
+# specimen are two runs that must be readable as one result, which is what
+# the paired_run_id field below records.
+
+SCRIPT_FUSION = os.path.join(PIPELINE_DIR, "fusion_calling.py")
+
+
+def rna_panel_options():
+    """Only the RNA profiles, for the RNA form's dropdown."""
+    if panel_profiles is None:
+        return []
+    return [o for o in panel_options()
+            if o["chemistry"] in panel_profiles.RNA_CHEMISTRIES]
+
+
+def default_rna_resources(data=None):
+    """
+    The RNA reference data the installer puts on disk, if it is there.
+
+    Same idea as discover_defaults() on the DNA side: the form is filled in
+    from what is actually installed rather than from a guess, so an operator
+    does not have to remember a path that only ever has one right value.
+    """
+    data = data or app.config["DATA_DIR"]
+    found = {}
+
+    gencode = os.path.join(data, "references", "gencode")
+    if os.path.isdir(gencode):
+        # Newest release present. A laboratory that has installed two is
+        # mid-upgrade, and the newer one is what a new run should use --
+        # but the field is editable, because the STAR index decides which
+        # annotation is actually correct for a run.
+        gtfs = sorted(glob.glob(os.path.join(gencode, "*.gtf")))
+        if gtfs:
+            found["gtf"] = gtfs[-1]
+
+    indexes = sorted(glob.glob(os.path.join(data, "references",
+                                            "star_hg38_*")))
+    indexes = [d for d in indexes
+               if os.path.exists(os.path.join(d, "SAindex"))]
+    if indexes:
+        found["star_index"] = indexes[-1]
+        # Read length is in the directory name because that is what makes
+        # two indexes different; recover it so the form can show what this
+        # index is for.
+        tail = os.path.basename(indexes[-1]).rsplit("_", 1)[-1]
+        if tail.isdigit():
+            found["read_length"] = tail
+
+    reference = os.path.join(data, "references", "hg38",
+                             "Homo_sapiens_assembly38.fasta")
+    if os.path.exists(reference):
+        found["reference"] = reference
+    return found
+
+
+@app.route("/new/rna")
+def new_rna_run():
+    return render_template("new_rna_run.html",
+                           patient_fields=PATIENT_FIELDS,
+                           roots=app.config["ALLOWED_ROOTS"],
+                           default_runs=app.config["RUNS_DIR"],
+                           defaults=default_rna_resources(),
+                           panels=rna_panel_options(),
+                           panel_settings=panel_settings_json(),
+                           dna_runs=finished_dna_runs())
+
+
+def finished_dna_runs():
+    """
+    DNA runs this specimen's RNA run could be paired with.
+
+    Offered rather than typed, because the pairing is the point: a DNA and
+    an RNA library from one specimen are one assay reported together, and a
+    free-text field for the partner run is a free-text field somebody
+    mistypes.
+    """
+    rows = []
+    try:
+        manager.load_existing()
+        for job in manager.all():
+            snap = job.snapshot()
+            if snap.get("assay") == "rna":
+                continue
+            label = (job.patient.get("specimen_id")
+                     or job.patient.get("patient_id") or snap["id"])
+            rows.append({"id": snap["id"], "label": label,
+                         "status": snap["status"]})
+    except Exception:                     # noqa: BLE001 - never break the form
+        return []
+    return list(reversed(rows))[:40]
+
+
+@app.route("/submit/rna", methods=["POST"])
+def submit_rna(validate_only=False):
+    """
+    Validate and queue an RNA fusion run.
+
+    `validate_only` stops before queueing and returns None when the
+    submission is good -- see submit() for why the hybrid route needs it.
+
+    Deliberately parallel to submit() rather than folded into it: the two
+    validate different things, and the one field they must NOT share is the
+    assay, because a DNA form posted to the RNA handler by accident would
+    otherwise start an RNA run with DNA settings and no complaint.
+    """
+    form = {k: v.strip() for k, v in request.form.items()}
+    patient = {key: form.get(key, "") for key, _ in PATIENT_FIELDS}
+
+    panel_applied = apply_panel_to_form(form)
+    # Fill in the installed reference data for anything left blank, the
+    # same way the DNA form fills in its databases.
+    for key, value in default_rna_resources().items():
+        if not form.get(key):
+            form[key] = value
+            panel_applied.append(key)
+
+    errors = []
+    resolved = {}
+
+    if form.get("panel"):
+        if panel_profiles is None:
+            errors.append(
+                "A panel was chosen but panel_profiles.py is not importable.")
+        elif form["panel"] not in panel_registry():
+            errors.append(f"Unknown panel profile {form['panel']!r}.")
+        elif panel_profiles.assay_type(
+                panel_registry()[form["panel"]]) != "rna":
+            # The guard that matters. A DNA profile here would configure
+            # duplicate marking and allele-fraction floors for a pipeline
+            # that has neither, and the run would start regardless.
+            errors.append(
+                f"{form['panel']!r} is a DNA profile. This form starts an "
+                f"RNA fusion run; pick an RNA panel, or use the DNA form.")
+
+    try:
+        resolved["output_dir"] = safe_path(form.get("output_dir"))
+    except ValueError as exc:
+        errors.append(f"Output directory: {exc}")
+
+    for field, label, required in (("reference", "Reference genome", True),
+                                   ("gtf", "Annotation GTF", True),
+                                   ("star_index", "STAR index", True),
+                                   ("arriba_resources",
+                                    "Arriba reference files", False)):
+        if not form.get(field):
+            if required:
+                errors.append(
+                    f"{label} is required. The installer puts it on disk "
+                    f"with 'install_pipeline.py --with-rna'.")
+            continue
+        try:
+            resolved[field] = safe_path(form[field], must_exist=True)
+        except ValueError as exc:
+            errors.append(f"{label}: {exc}")
+
+    if form.get("manifest"):
+        try:
+            resolved["manifest"] = safe_path(form["manifest"],
+                                             must_exist=True)
+        except ValueError as exc:
+            errors.append(f"QC manifest: {exc}")
+    else:
+        try:
+            resolved["input_dir"] = safe_path(form.get("input_dir"),
+                                              must_exist=True)
+        except ValueError as exc:
+            errors.append(f"Input directory: {exc}")
+        if not form.get("auto_discover"):
+            if not form.get("sample"):
+                errors.append("Sample name is required unless auto-discover "
+                              "or a manifest is used.")
+            if not form.get("r1"):
+                errors.append("Read 1 FASTQ is required.")
+            for field in ("r1", "r2"):
+                if form.get(field):
+                    try:
+                        resolved[field] = safe_path(form[field],
+                                                    must_exist=True)
+                    except ValueError as exc:
+                        errors.append(f"{field.upper()}: {exc}")
+
+    if not patient.get("patient_id") and not patient.get("specimen_id"):
+        errors.append("Give at least a patient/MRN or a specimen ID, so the "
+                      "report can be attributed to something.")
+
+    if errors:
+        return render_template("new_rna_run.html", errors=errors, form=form,
+                               patient=patient,
+                               patient_fields=PATIENT_FIELDS,
+                               roots=app.config["ALLOWED_ROOTS"],
+                               default_runs=app.config["RUNS_DIR"],
+                               defaults=default_rna_resources(),
+                               panels=rna_panel_options(),
+                               panel_settings=panel_settings_json(),
+                               dna_runs=finished_dna_runs()), 400
+
+    if validate_only:
+        return None                       # everything checked out
+
+    merged = dict(form)
+    merged.update(resolved)
+    merged["assay"] = "rna"
+    merged["panel_applied_fields"] = " ".join(panel_applied)
+    if form.get("panel") and panel_profiles is not None:
+        profile = panel_registry().get(form["panel"])
+        if profile:
+            merged["panel_label"] = f"{profile['name']} ({profile['id']})"
+            merged["panel_chemistry"] = profile["chemistry"]
+            merged["panel_notes"] = profile.get("notes", [])
+
+    # PCGR 2.x takes RNA fusions as a molecular input in their own right --
+    # verified against the installed version's own validator -- so an RNA
+    # run gets a real clinical interpretation, not only the pipeline's
+    # ranked table. The bundle is filled in from what is installed, exactly
+    # as the DNA form does it.
+    for key, value in discover_defaults().items():
+        if key in ("pcgr_refdata_dir", "vep_dir") and not merged.get(key):
+            merged[key] = value
+
+    # When the operator linked a DNA run, find that run's variant calls so
+    # PCGR can report both libraries of the specimen as ONE document.
+    if merged.get("paired_run_id"):
+        merged.update(paired_dna_inputs(merged["paired_run_id"]))
+
+    rna_env = jobs.find_conda_env(jobs.RNA_ENV_NAME)
+    rna_python = jobs.env_python(rna_env) or sys.executable
+    argv = jobs.build_rna_argv(rna_python, SCRIPT_FUSION, merged)
+
+    job = manager.submit(SCRIPT_FUSION, argv, patient, meta=merged,
+                         pcgr_form=(merged if merged.get("pcgr_refdata_dir")
+                                    else None),
+                         assay="rna")
+    return redirect(url_for("job_view", job_id=job.id))
+
+
+def paired_dna_inputs(run_id):
+    """
+    The linked DNA run's variant calls, for a combined PCGR report.
+
+    Returns {} whenever the pairing cannot be honoured -- the run is gone,
+    it never finished, it produced no VCF. A combined report is a bonus;
+    failing to build one must never cost the RNA report that would
+    otherwise have been produced on its own.
+    """
+    try:
+        dna = manager.get(run_id)
+        if dna is None or dna.assay == "rna":
+            return {}
+        output_dir = dna.meta.get("output_dir")
+        manifest = (jobs.latest_manifest(output_dir, "dna")
+                    if output_dir else None)
+        if not manifest:
+            return {}
+        vcf = manifest.get("cosmic_vcf") or manifest.get("filtered_vcf")
+        if not vcf or not os.path.exists(vcf):
+            return {}
+        return {
+            "paired_vcf": vcf,
+            # PCGR has to know whether the DNA library had a matched
+            # normal: without one it must apply germline filtering, and
+            # getting that wrong fills the report with inherited variants.
+            "paired_normal": manifest.get("normal") or "",
+            "paired_sample": manifest.get("tumour") or "",
+            "paired_output_dir": output_dir,
+        }
+    except Exception:                     # noqa: BLE001 - never block a run
+        return {}
+
+
+@app.route("/new/hybrid")
+def new_hybrid_run():
+    """The form for a kit whose specimen yields both a DNA and an RNA library."""
+    return render_template("new_hybrid_run.html",
+                           patient_fields=PATIENT_FIELDS,
+                           roots=app.config["ALLOWED_ROOTS"],
+                           default_runs=app.config["RUNS_DIR"],
+                           defaults=dict(discover_defaults(),
+                                         **default_rna_resources()),
+                           dna_panels=[o for o in panel_options()
+                                       if not o["chemistry"].startswith("rna-")],
+                           rna_panels=rna_panel_options(),
+                           hybrid_pairs=hybrid_panel_pairs(),
+                           tumour_sites=TUMOUR_SITES)
+
+
+@app.route("/submit/hybrid", methods=["POST"])
+def submit_hybrid():
+    """
+    Queue both halves of a hybrid panel as one action.
+
+    WHAT THIS SAVES THE OPERATOR
+      Two runs, submitted in the right order, with the RNA half linked back
+      to the DNA half so that PCGR produces ONE report for the specimen.
+      Done by hand that is two forms, two output directories and a linking
+      step that is invisible if you forget it -- and forgetting it costs
+      nothing visible at the time and produces two disconnected reports at
+      the end.
+
+    ORDER MATTERS AND IS NOT COSMETIC. The DNA run is submitted first so
+    that it reaches the front of the serial queue first; by the time the
+    RNA run's report step runs, the DNA half has finished and its VCF
+    exists. The pairing itself is resolved late -- see build_rna_pcgr_argv()
+    -- so even if that ordering is disturbed, the worst case is two
+    separate reports rather than a failure.
+    """
+    form = {k: v.strip() for k, v in request.form.items()}
+    patient = {key: form.get(key, "") for key, _ in PATIENT_FIELDS}
+    errors = []
+
+    if not patient.get("patient_id") and not patient.get("specimen_id"):
+        errors.append("Give at least a patient/MRN or a specimen ID, so both "
+                      "runs can be attributed to the same specimen.")
+
+    # --- shared output root, one subdirectory per library ---------------
+    base = None
+    try:
+        base = safe_path(form.get("output_dir"))
+    except ValueError as exc:
+        errors.append(f"Output directory: {exc}")
+
+    # --- the DNA half ---------------------------------------------------
+    dna_form = dict(form)
+    dna_form["panel"] = form.get("dna_panel", "")
+    dna_form["panel_bed"] = form.get("panel_bed", "")
+    dna_form["input_dir"] = form.get("dna_input_dir", "")
+    dna_form["tumour_sample"] = form.get("dna_sample", "")
+    dna_form["tumour_r1"] = form.get("dna_r1", "")
+    dna_form["tumour_r2"] = form.get("dna_r2", "")
+    dna_form["auto_discover"] = form.get("dna_auto_discover", "")
+    if base:
+        dna_form["output_dir"] = os.path.join(base, "dna")
+
+    # --- the RNA half ---------------------------------------------------
+    rna_form = dict(form)
+    rna_form["panel"] = form.get("rna_panel", "")
+    rna_form["input_dir"] = form.get("rna_input_dir", "")
+    rna_form["sample"] = form.get("rna_sample", "")
+    rna_form["r1"] = form.get("rna_r1", "")
+    rna_form["r2"] = form.get("rna_r2", "")
+    rna_form["auto_discover"] = form.get("rna_auto_discover", "")
+    if base:
+        rna_form["output_dir"] = os.path.join(base, "rna")
+
+    for label, half, panel_key, assay in (("DNA", dna_form, "panel", "dna"),
+                                          ("RNA", rna_form, "panel", "rna")):
+        chosen = half.get(panel_key)
+        if chosen and panel_profiles is not None:
+            profile = panel_registry().get(chosen)
+            if not profile:
+                errors.append(f"{label} half: unknown panel {chosen!r}.")
+            elif panel_profiles.assay_type(profile) != assay:
+                errors.append(
+                    f"{label} half was given {chosen!r}, which is a "
+                    f"{panel_profiles.assay_type(profile).upper()} profile. "
+                    f"Each half needs a profile for its own library type.")
+
+    if errors:
+        return render_template(
+            "new_hybrid_run.html", errors=errors, form=form, patient=patient,
+            patient_fields=PATIENT_FIELDS,
+            roots=app.config["ALLOWED_ROOTS"],
+            default_runs=app.config["RUNS_DIR"],
+            defaults=dict(discover_defaults(), **default_rna_resources()),
+            dna_panels=[o for o in panel_options()
+                        if not o["chemistry"].startswith("rna-")],
+            rna_panels=rna_panel_options(),
+            hybrid_pairs=hybrid_panel_pairs(),
+            tumour_sites=TUMOUR_SITES), 400
+
+    # The RNA engine needs a real FASTA: Arriba reads the sequence either
+    # side of every breakpoint out of it, so it cannot resolve the genome
+    # NAME the DNA form accepts. Supply the installed genome's path.
+    if not rna_form.get("reference") or \
+            not os.path.isabs(rna_form.get("reference", "")):
+        installed = default_rna_resources().get("reference")
+        if installed:
+            rna_form["reference"] = installed
+        else:
+            errors.append(
+                "The RNA half needs the genome FASTA itself, not the name "
+                "'hg38' -- the fusion caller reads sequence from it. None "
+                "was found in the configured data directory; install the "
+                "reference, or start an RNA run on its own and give the "
+                "path.")
+
+    # VALIDATE BOTH HALVES BEFORE QUEUEING EITHER.
+    #
+    # Each half is checked by the SAME handler the single-assay forms use,
+    # in validate-only mode. Two reasons, and the second is the one that
+    # matters: re-implementing the checks here is how the paths would drift
+    # apart, and submitting the DNA half before discovering the RNA half is
+    # invalid leaves a run executing behind an error page that says nothing
+    # was started.
+    if not errors:
+        for half, form_values in (("DNA", dna_form), ("RNA", rna_form)):
+            handler = submit if half == "DNA" else submit_rna
+            problem = _submit_via(handler, form_values, patient,
+                                  validate_only=True)
+            if problem is not None:
+                # The handler rendered its own error page for that half.
+                # Return it: it names the fields, which a summary would not.
+                return problem
+
+    if errors:
+        return render_template(
+            "new_hybrid_run.html", errors=errors, form=form, patient=patient,
+            patient_fields=PATIENT_FIELDS,
+            roots=app.config["ALLOWED_ROOTS"],
+            default_runs=app.config["RUNS_DIR"],
+            defaults=dict(discover_defaults(), **default_rna_resources()),
+            dna_panels=[o for o in panel_options()
+                        if not o["chemistry"].startswith("rna-")],
+            rna_panels=rna_panel_options(),
+            hybrid_pairs=hybrid_panel_pairs(),
+            tumour_sites=TUMOUR_SITES), 400
+
+    # Both halves are good. DNA first, so it reaches the front of the
+    # serial queue first and its VCF exists by the time the RNA half's
+    # report step runs.
+    dna_response = _submit_via(submit, dna_form, patient)
+    if not hasattr(dna_response, "location"):
+        return dna_response
+
+    dna_id = str(dna_response.location).rsplit("/", 1)[-1]
+    dna_job = manager.get(dna_id)
+    rna_form["paired_run_id"] = dna_id
+    if dna_job is not None:
+        # The DIRECTORY, not the VCF: the VCF does not exist yet, and will
+        # not until the DNA half finishes. build_rna_pcgr_argv() reads the
+        # manifest out of it at report time.
+        rna_form["paired_output_dir"] = dna_job.meta.get("output_dir", "")
+
+    rna_response = _submit_via(submit_rna, rna_form, patient)
+    if not hasattr(rna_response, "location"):
+        return rna_response
+
+    rna_id = str(rna_response.location).rsplit("/", 1)[-1]
+    # Record the pairing on BOTH runs, so either page can reach the other.
+    rna_job = manager.get(rna_id)
+    if dna_job is not None and rna_job is not None:
+        dna_job.meta["paired_run_id"] = rna_id
+        dna_job.meta["hybrid"] = "1"
+        rna_job.meta["hybrid"] = "1"
+        dna_job._write_state()
+        rna_job._write_state()
+    return redirect(url_for("job_view", job_id=dna_id))
+
+
+def _submit_via(handler, form_values, patient, validate_only=False):
+    """
+    Run one of the single-assay submit handlers against a synthetic form.
+
+    The handlers read request.form, so the hybrid path pushes a request
+    context carrying the half it wants submitted. Uglier than calling a
+    shared function, and safer than the alternative: it means the hybrid
+    route cannot validate a run differently from the form that normally
+    submits it.
+    """
+    payload = {k: v for k, v in form_values.items() if v not in (None, "")}
+    payload.update({k: v for k, v in patient.items() if v})
+    with app.test_request_context("/", method="POST", data=payload):
+        return handler(validate_only=validate_only)
+
+
+@app.route("/panels")
+def panels_page():
+    """
+    Reference page: every profile, what it sets, and what it warns about.
+
+    The dropdown can only show a line of summary. The caveats -- that this
+    pipeline does not build UMI consensus reads, that duplicate marking is
+    off for amplicon chemistry, that TMB under 1 Mb is not reportable --
+    are the part somebody needs to have read before they use the result,
+    so they get a page rather than a tooltip.
+    """
+    return render_template("panels.html",
+                           panels=panel_options(),
+                           details=json.loads(panel_settings_json()),
+                           available=panel_profiles is not None)
 
 
 # ---------------------------------------------------------------------------
@@ -326,24 +1032,57 @@ def apply_resource_defaults(form):
     # form -- an API call or a script. The form posts a marker, and when it
     # is present the checkboxes are taken exactly as submitted, so unticking
     # one actually turns it off.
+    #
+    # A toggle the PANEL decided is left alone either way. A hotspot panel's
+    # profile turns TMB off because 22 kb is not a denominator anybody can
+    # divide by; letting the generic "clinical reports are the point" default
+    # turn it straight back on would produce exactly the confidently wrong
+    # number the profile exists to prevent.
+    decided = set(str(form.get("_panel_toggles", "")).split())
     if not form.get("form_rendered"):
         for key, value in ANALYSIS_TOGGLES.items():
-            if value and not form.get(key):
+            if value and not form.get(key) and key not in decided:
                 form[key] = value
                 applied.append(key)
     return applied
 
 
 @app.route("/submit", methods=["POST"])
-def submit():
+def submit(validate_only=False):
+    """
+    Validate and queue a DNA run.
+
+    `validate_only` runs every check and stops before anything is queued,
+    returning None when the submission is good. The hybrid route uses it to
+    check BOTH halves before starting either -- otherwise a bad RNA half
+    leaves a DNA run already executing behind an error page that says
+    nothing was started.
+    """
     form = {k: v.strip() for k, v in request.form.items()}
     patient = {key: form.get(key, "") for key, _ in PATIENT_FIELDS}
 
-    # Before validation, so anything filled in here is path-checked exactly
-    # like a value the user typed.
+    # The panel goes first: it decides the target BED and the analysis
+    # toggles, and apply_resource_defaults() below must see those decisions
+    # rather than overwrite them. Both run before validation, so anything
+    # they fill in is path-checked exactly like a value the user typed.
+    panel_applied = apply_panel_to_form(form)
     auto_applied = apply_resource_defaults(form)
 
     errors = []
+    # A panel id that does not resolve is refused rather than ignored: a
+    # run configured from a profile that silently did not exist is a run
+    # configured from nothing, and it would look identical on the page.
+    if form.get("panel"):
+        if panel_profiles is None:
+            errors.append(
+                "A panel was chosen but panel_profiles.py is not importable "
+                "from the pipeline directory, so none of its settings were "
+                "applied. Clear the panel, or restore the file.")
+        elif form["panel"] not in panel_registry():
+            errors.append(
+                f"Unknown panel profile {form['panel']!r}. Pick one from the "
+                f"list, or add your own to "
+                f"~/.config/cancer_pipeline/panels.")
     # --- validate the paths before anything is started -----------------
     resolved = {}
     try:
@@ -411,10 +1150,24 @@ def submit():
                                                   and form.get("normal_r2")):
                 errors.append("A normal sample needs both normal R1 and R2")
 
+    # The target intervals and the coverage BED are usually copies of the
+    # panel BED, put there by apply_panel_to_form(). Checking all three
+    # separately reports one bad path as three errors naming two fields the
+    # operator never filled in, so the copies take the panel BED's own
+    # result instead of being re-checked. Note the loop order: panel_bed is
+    # resolved before the fields that derive from it.
+    derived_from_bed = {field for field in ("intervals", "coverage_bed")
+                        if field in panel_applied
+                        and form.get(field) == form.get("panel_bed")}
+
     for optional in ("cosmic", "dbsnp", "germline_resource",
                      "panel_of_normals", "contamination_resource",
-                     "msi_models", "intervals", "coverage_bed",
+                     "msi_models", "panel_bed", "intervals", "coverage_bed",
                      "pcgr_refdata_dir", "vep_dir", "reference_dir"):
+        if optional in derived_from_bed:
+            if "panel_bed" in resolved:
+                resolved[optional] = resolved["panel_bed"]
+            continue
         if form.get(optional):
             try:
                 resolved[optional] = safe_path(form[optional], must_exist=True)
@@ -488,11 +1241,26 @@ def submit():
                                default_runs=app.config["RUNS_DIR"],
                                defaults=dict(discover_defaults(),
                                              **ANALYSIS_TOGGLES),
+                               panels=panel_options(),
+                               panel_settings=panel_settings_json(),
                                tumour_sites=TUMOUR_SITES), 400
+
+    if validate_only:
+        return None                       # everything checked out
 
     merged = dict(form)
     merged.update(resolved)
     merged["auto_applied_resources"] = " ".join(auto_applied)
+    # Same reasoning as auto_applied_resources: a run record that shows a
+    # dozen settings without saying where they came from leaves a later
+    # reader to guess which were chosen and which were inherited.
+    merged["panel_applied_fields"] = " ".join(panel_applied)
+    if form.get("panel") and panel_profiles is not None:
+        profile = panel_registry().get(form["panel"])
+        if profile:
+            merged["panel_label"] = f"{profile['name']} ({profile['id']})"
+            merged["panel_chemistry"] = profile["chemistry"]
+            merged["panel_notes"] = profile.get("notes", [])
     # Store the label too: a run record reading "Tumour site: 15" tells a
     # later reader nothing without the codebook.
     merged["pcgr_tumour_site_label"] = tumour_site_label(
@@ -645,6 +1413,71 @@ def database_notice():
     }
 
 
+def rna_run_warnings(meta):
+    """
+    What an RNA run gave up, and what its reader must not assume.
+
+    The DNA equivalent is about resources that were left blank. Here the
+    dominant risk is different and worse: an RNA run that produces nothing
+    looks exactly like an RNA run that found nothing, and every artefact
+    downstream -- the table, the PDF, the summary line -- is identical in
+    the two cases.
+    """
+    notes = []
+
+    if meta.get("panel_label"):
+        for note in (meta.get("panel_notes") or []):
+            notes.append(f"{meta['panel_label']}: {note}")
+    else:
+        notes.append(
+            "No panel profile was named, so the library-size and "
+            "mapping-rate floors that decide whether a negative is "
+            "interpretable were left at their generic defaults. Those "
+            "differ by an order of magnitude between an anchored-PCR panel "
+            "and a whole transcriptome.")
+
+    if not meta.get("rna_quality"):
+        notes.append(
+            "No RNA quality figure (DV200/RIN) was recorded. It is an "
+            "instrument measurement of the extracted RNA, it cannot be "
+            "recovered from the sequencing data, and it is the single best "
+            "predictor of whether fusion detection could have worked at "
+            "all. A negative result without it is hard to defend.")
+
+    if not meta.get("arriba_resources"):
+        notes.append(
+            "No explicit Arriba reference directory was given. The files "
+            "ship inside the conda environment and are normally found "
+            "automatically -- but if they were not, the run had no "
+            "blacklist, and recurrent read-through artefacts will appear in "
+            "the table as high-confidence fusions. The run log says which "
+            "files were located.")
+
+    if not meta.get("paired_run_id"):
+        notes.append(
+            "This RNA run is not linked to a DNA run. Fusions and SNVs from "
+            "one specimen are one result reported together; linking them "
+            "makes that explicit in the record rather than leaving it to "
+            "whoever reads the two reports.")
+
+    if meta.get("skip_steps"):
+        skipped = str(meta["skip_steps"]).split()
+        if "rnaqc" in skipped:
+            notes.append(
+                "The RNA library QC step was skipped. Nothing in this run "
+                "now says whether an empty fusion table is a negative "
+                "result or an unusable library.")
+        if "fusions" in skipped:
+            notes.append("Fusion calling itself was skipped.")
+
+    notes.append(
+        "Fusion calls from RNA are evidence of a transcript, not proof of a "
+        "genomic rearrangement. Callers disagree substantially on real "
+        "data; orthogonal confirmation is expected before clinical "
+        "reporting.")
+    return notes
+
+
 def run_warnings(meta):
     """
     What this run gave up by leaving fields blank.
@@ -656,8 +1489,43 @@ def run_warnings(meta):
     form does not yet know which boxes matter. These are warnings, not
     errors: a bare run is legitimate, it just should not be silent.
     """
+    # An RNA run shares almost none of the DNA warnings below -- it has no
+    # germline resource, no BQSR, no panel of normals, no PCGR -- so it gets
+    # its own list rather than a DNA list with most items suppressed.
+    if meta.get("assay") == "rna":
+        return rna_run_warnings(meta)
+
     notes = []
     tumour_only = not meta.get("normal_sample")
+
+    # What assay these numbers belong to, and what that assay's profile
+    # wanted the reader to know. The caveats are carried into the run
+    # record on purpose: whoever reads this page months later will not have
+    # the panels page open beside it.
+    if meta.get("panel_label"):
+        for note in (meta.get("panel_notes") or []):
+            notes.append(f"{meta['panel_label']}: {note}")
+        # The one combination that destroys a run silently. Amplicon reads
+        # share primer coordinates, so duplicate marking flags nearly the
+        # whole library and the caller then works from what little
+        # survived. The profile skips the step; this catches an operator
+        # who cleared the box afterwards.
+        if meta.get("panel_chemistry") == "amplicon" and \
+                "dedup" not in str(meta.get("skip_steps", "")).split():
+            notes.append(
+                "This is an amplicon panel and duplicate marking was NOT "
+                "skipped. Amplicon reads all start and end at primer "
+                "coordinates, so MarkDuplicates flags almost the entire "
+                "library and the variant caller sees a small fraction of "
+                "the real depth. Add 'dedup' to the skipped steps and "
+                "re-run.")
+    elif meta.get("intervals") or meta.get("coverage_bed"):
+        notes.append(
+            "No panel profile was named, so the chemistry-specific settings "
+            "-- interval padding, the VAF and depth floors, whether "
+            "duplicate marking is meaningful for this library -- were left "
+            "at their general-purpose defaults. Choosing the assay on the "
+            "new-run form sets them together.")
 
     if not meta.get("germline_resource") and tumour_only:
         notes.append(
@@ -672,7 +1540,8 @@ def run_warnings(meta):
         notes.append(
             "No target intervals. On a capture panel or exome Mutect2 walks "
             "the whole genome and calls on off-target reads, which can "
-            "outnumber the real calls by two orders of magnitude.")
+            "outnumber the real calls by two orders of magnitude. The panel "
+            "BED field fills this and the coverage BED together.")
     if not meta.get("contamination_resource"):
         notes.append(
             "No contamination resource, so filtering assumed a contamination "
@@ -727,16 +1596,26 @@ def coverage_links(job):
                 jobs.find_coverage_reports(job.meta.get("output_dir")))]
 
 
-def render_job(job, notice=None, notice_kind="ok"):
+def render_job(job, notice=None, notice_kind="ok", report_error=None,
+               status=200):
     """
     Render the job page.
 
     Shared by the view and by actions that report a result, so an
     action can show its outcome without a session -- this app has no
     secret key and does not need one for a single-analyst tool.
+
+    EVERY path that shows this page goes through here. The PDF-failure
+    path used to call render_template() directly with five of the
+    template's variables, which rendered a page missing its output links,
+    its coverage reports, its warnings and its progress -- all silently,
+    because an undefined name in Jinja is simply falsy. The one moment an
+    operator most needs the rest of the page is the moment a report failed
+    to build.
     """
     entries, total = jobs.survey_intermediates(
         job.meta.get("output_dir"))
+    items = run_artefacts(job)
     return render_template(
         "job.html", job=job.snapshot(),
         patient=job.patient,
@@ -746,12 +1625,40 @@ def render_job(job, notice=None, notice_kind="ok"):
         cleanup={"entries": entries, "total": total},
         human_bytes=jobs.human_bytes,
         notice=notice, notice_kind=notice_kind,
+        report_error=report_error,
         batch_of=job.meta.get("batch_of"),
         auto_applied=[k for k in
                       (job.meta.get("auto_applied_resources") or
                        "").split() if k],
         coverage=coverage_links(job),
-        coverage_bed=job.meta.get("coverage_bed"))
+        coverage_bed=job.meta.get("coverage_bed"),
+        # The RNA branch's two reports, listed the same way and for the
+        # same reason: both are readable while the run is still going.
+        rna_fusion_reports=[
+            (i, os.path.basename(p)[:-len(".fusions.html")])
+            for i, p in enumerate(jobs.find_rna_reports(
+                job.meta.get("output_dir"), "fusion"))],
+        rna_qc_reports=[
+            (i, os.path.basename(p)[:-len(".rna_qc.html")])
+            for i, p in enumerate(jobs.find_rna_reports(
+                job.meta.get("output_dir"), "qc"))],
+        paired_run_id=job.meta.get("paired_run_id"),
+        # Every output of the run, grouped and described in plain English.
+        # See webapp/artefacts.py: the group ORDER is a clinical argument,
+        # not a filing convention.
+        artefact_groups=artefacts.grouped(items),
+        artefact_absent=artefacts.absent_notes(job.snapshot(), items,
+                                               job.meta),
+        human_size=jobs.human_bytes,
+        # Which assay this run was configured for, and which fields the
+        # profile filled in. Shown for the same reason the auto-applied
+        # resources are: a setting that arrived from somewhere the reader
+        # cannot see is what makes two runs disagree inexplicably.
+        panel_label=job.meta.get("panel_label"),
+        panel_chemistry=job.meta.get("panel_chemistry"),
+        panel_applied=[k for k in
+                       (job.meta.get("panel_applied_fields") or
+                        "").split() if k])
 
 
 @app.route("/job/<job_id>")
@@ -794,14 +1701,19 @@ def job_report(job_id):
 
     pdf_path = os.path.join(job.run_dir, f"report_{job_id}.pdf")
     try:
-        result = build_report(job.patient, job.snapshot(), output_dir,
-                              pdf_path)
+        if job.assay == "rna":
+            # A different document, not a flag on the same one: an RNA run
+            # has no variant table, no target coverage and no PCGR, and
+            # half a report saying "not applicable" teaches a reader to
+            # skim. See webapp/rna_report.py.
+            result = build_rna_report(job.snapshot(), job.patient,
+                                      output_dir, pdf_path)
+        else:
+            result = build_report(job.patient, job.snapshot(), output_dir,
+                                  pdf_path)
     except Exception as exc:  # noqa: BLE001 - surfaced to the user
-        return render_template("job.html", job=job.snapshot(),
-                               patient=job.patient,
-                               patient_fields=PATIENT_FIELDS,
-                               char_warnings=patient_warnings(job.patient),
-                               report_error=f"{type(exc).__name__}: {exc}"), 500
+        return render_job(job,
+                          report_error=f"{type(exc).__name__}: {exc}"), 500
 
     with open(os.path.join(job.run_dir, "report_meta.json"), "w",
               encoding="utf-8") as fh:
@@ -856,18 +1768,53 @@ def job_cleanup(job_id):
 
 @app.route("/job/<job_id>/results")
 def job_results(job_id):
-    """Show what the run produced, and where PCGR's own report lives."""
+    """
+    Show what the run produced, and where the interpretation lives.
+
+    ASSAY-AWARE, because it was not and the result was actively
+    misleading: on an RNA run it read a DNA manifest that does not exist
+    (so every field was blank), then reported "no coverage report -- this
+    run was submitted without a target BED", which on an RNA run is not a
+    missing input but a concept that does not apply. A page that invents a
+    shortcoming teaches an operator to distrust the ones that are real.
+    """
     job = manager.get(job_id) or abort(404)
     output_dir = job.meta.get("output_dir") or ""
-    manifest = load_pipeline_manifest(output_dir) if output_dir else {}
+    assay = job.assay
+    manifest = {}
+    if output_dir:
+        manifest = (jobs.latest_manifest(output_dir, "rna") if assay == "rna"
+                    else load_pipeline_manifest(output_dir)) or {}
     pcgr = find_pcgr_outputs(output_dir) if output_dir else {"html": [],
                                                              "tsv": [],
                                                              "dir": ""}
     pdf_path = os.path.join(job.run_dir, f"report_{job_id}.pdf")
+
+    # Links are built from the run's artefact list so they carry the same
+    # STABLE ids the job page uses. Addressing these by position in a glob
+    # was the bug: the set grows while the run is going, and a link then
+    # serves a different file than the one it is labelled with.
+    def links(paths, suffix):
+        return [(artefacts.artefact_id(p, job.run_dir, output_dir),
+                 os.path.basename(p)[:-len(suffix)]) for p in paths]
+
+    # For an RNA run the question "was the sequencing good enough?" is
+    # answered by the library-adequacy report, not by target coverage.
+    quality = []
+    if assay == "rna":
+        quality = links(jobs.find_rna_reports(output_dir, "qc"),
+                        ".rna_qc.html")
+    fusions = links(jobs.find_rna_reports(output_dir, "fusion"),
+                    ".fusions.html")
+
     return render_template("results.html", job=job.snapshot(),
+                           assay=assay,
                            manifest=manifest, pcgr=pcgr,
-                           coverage=coverage_links(job),
+                           coverage=links(
+                               jobs.find_coverage_reports(output_dir),
+                               ".coverage.html"),
                            coverage_bed=job.meta.get("coverage_bed"),
+                           rna_quality=quality, rna_fusions=fusions,
                            has_pdf=os.path.exists(pdf_path),
                            patient=job.patient,
                            patient_fields=PATIENT_FIELDS)
@@ -889,25 +1836,40 @@ def job_pcgr(job_id):
     return send_file(pcgr["html"][0])
 
 
-@app.route("/job/<job_id>/coverage")
-@app.route("/job/<job_id>/coverage/<int:index>")
-def job_coverage(job_id, index=0):
-    """
-    Serve one sample's target-coverage report.
 
-    Like the PCGR route, the file is chosen from the run's own coverage
-    directory by index -- never from a path in the request. Available as
-    soon as the pipeline has written it, which is while the run is still
-    going: that is the point of it.
+
+def run_artefacts(job):
+    """Every file this run produced, described and ordered for reading."""
+    return artefacts.collect(job.snapshot(), job.run_dir,
+                             job.meta.get("output_dir"))
+
+
+@app.route("/job/<job_id>/file/<artefact>")
+def job_file(job_id, artefact):
+    """
+    Serve one of a run's output files.
+
+    Addressed by INDEX into the discovered list, never by a path from the
+    request -- the same rule the PCGR, coverage and RNA routes follow. The
+    index is re-resolved and re-checked for containment on every request,
+    so a job record edited on disk cannot turn this into a file-read
+    primitive.
+
+    HTML and PDF open in the browser; everything else downloads, because a
+    browser rendering 40 MB of VCF inline helps nobody.
     """
     job = manager.get(job_id) or abort(404)
-    reports = jobs.find_coverage_reports(job.meta.get("output_dir"))
-    if not reports:
-        abort(404, "no coverage report for this run -- it needs a target "
-                   "BED, and this run was submitted without one")
-    if index < 0 or index >= len(reports):
-        abort(404, "no coverage report at that index")
-    return send_file(reports[index])
+    items = run_artefacts(job)
+    path, item = artefacts.resolve(items, artefact, job.run_dir,
+                                   job.meta.get("output_dir"))
+    if not path or not os.path.exists(path):
+        abort(404, "no such output file for this run")
+    if item["action"] == artefacts.VIEW:
+        return send_file(path)
+    return send_file(path, as_attachment=True,
+                     download_name=os.path.basename(path))
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -1054,7 +2016,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Web interface for the cancer DNA pipeline.",
+        description="Web interface for the Cancer Genomics Pipelines.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--host", default="127.0.0.1",
                         help="Interface to bind. The default keeps the app "

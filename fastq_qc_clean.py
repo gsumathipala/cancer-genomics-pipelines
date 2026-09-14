@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 fastq_qc_clean.py
 =================
@@ -421,6 +422,31 @@ def build_parser():
                          help="Only process this many reads from each FASTQ. "
                               "Useful for quick test runs / debugging. Same "
                               "flag as comprehensive_variant_calling.py.")
+
+    # --- Panel / assay profile ---
+    # The same profiles the variant caller uses, applied to the subset this
+    # stage implements: adapters, read length and the UMI layout. Handing
+    # both stages one profile name is the point -- a QIAseq run whose UMI
+    # was extracted here and a caller stage configured from somewhere else
+    # is how a chain ends up half-configured.
+    panel = parser.add_argument_group(
+        "panel / assay profile",
+        "Configure trimming and UMI handling by naming the assay. Explicit "
+        "flags always win over the profile.")
+    panel.add_argument("--panel", default=None, metavar="ID",
+                       help="Panel profile to take QC settings from (UMI "
+                            "location and length, adapters, minimum read "
+                            "length). Only the trimming keys are read here; "
+                            "the same profile also configures the variant "
+                            "caller. --list-panels shows what is available.")
+    panel.add_argument("--panel-file", action="append", default=[],
+                       metavar="JSON",
+                       help="Additional profile file or directory to load, "
+                            "repeatable.")
+    panel.add_argument("--list-panels", action="store_true",
+                       help="List every known panel profile and exit.")
+    panel.add_argument("--describe-panel", default=None, metavar="ID",
+                       help="Print everything a profile sets, and exit.")
     return parser
 
 
@@ -556,9 +582,54 @@ def verify_output(path):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+def apply_panel(args, parser, argv):
+    """
+    Fill in the QC settings this stage implements from --panel.
+
+    Only the trimming and UMI keys are applied: the same profile carries
+    caller and report settings, which this script has no arguments for and
+    must ignore rather than choke on. panel_profiles.py is imported lazily
+    and its absence is tolerated unless --panel was actually asked for --
+    a run configured from a profile that could not be loaded would be a
+    differently configured run that said nothing about it.
+    """
+    if not args.panel:
+        return
+    try:
+        import panel_profiles
+    except ImportError as exc:
+        parser.error(f"--panel needs panel_profiles.py beside this script, "
+                     f"and it could not be imported ({exc}).")
+        return
+    try:
+        registry = panel_profiles.available_panels(
+            extra_files=args.panel_file,
+            warn=lambda msg: print(f"[WARN] {msg}"))
+        profile = panel_profiles.resolve_panel(args.panel, registry)
+        applied, overridden = panel_profiles.apply_profile(
+            args, profile, panel_profiles.explicit_dests(parser, argv),
+            only=panel_profiles.QC_SETTINGS)
+    except panel_profiles.PanelError as exc:
+        parser.error(str(exc))
+        return
+    print()
+    print(panel_profiles.format_application(profile, applied, overridden))
+
+
 def main():
+    # --list-panels / --describe-panel answer without -i/-o, which argparse
+    # cannot express, so they are handled before the real parser runs.
+    try:
+        import panel_profiles
+        panel_profiles.handle_panel_queries()
+    except ImportError:
+        pass
+
     parser = build_parser()
     args = parser.parse_args()
+    # Before validation: the profile can supply the --umi-len that
+    # validate_args() is about to insist on.
+    apply_panel(args, parser, sys.argv[1:])
     validate_args(args, parser)
 
     started = datetime.now(timezone.utc)

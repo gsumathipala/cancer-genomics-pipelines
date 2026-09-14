@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 maintenance.py
 ==============
@@ -84,6 +85,45 @@ UPDATERS = {
                    "release notes for the bundle that pairs with this "
                    "version, then update the bundle and VEP cache too. A "
                    "mismatched pair is the classic failed first run.",
+    },
+    # The RNA branch. These rows only appear once it is installed, because
+    # check_db_updates.py omits the checks entirely on a DNA-only machine.
+    "GENCODE annotation (RNA)": {
+        # TWO steps, deliberately. The annotation is baked into the STAR
+        # index at build time, so upgrading one without the other produces
+        # exactly the inconsistency check_star_index() exists to catch.
+        "step": ["gencode", "star-index"],
+        "label": "GENCODE annotation and the STAR index built from it",
+        "fields": [
+            {"name": "gencode_release", "flag": "--gencode-release",
+             "label": "GENCODE release to install", "from_latest": True},
+            {"name": "rna_read_length", "flag": "--rna-read-length",
+             "label": "Read length to build the index for (e.g. 150)"},
+        ],
+        "warning": "Downloads the new annotation and REBUILDS the STAR "
+                   "index from it -- about an hour of CPU, ~32 GB of RAM "
+                   "and ~30 GB of disk. The two go together: an index built "
+                   "from the old annotation would find junctions from one "
+                   "release while the fusion caller named genes from "
+                   "another, silently. Gene names and transcript sets shift "
+                   "between releases, so fusion reports produced afterwards "
+                   "can differ from earlier ones for the same specimen -- "
+                   "do not mix releases within a cohort.",
+    },
+    "STAR index (RNA)": {
+        "step": "star-index",
+        "label": "STAR index",
+        "fields": [
+            {"name": "rna_read_length", "flag": "--rna-read-length",
+             "label": "Read length to build the index for (e.g. 150)"},
+        ],
+        "warning": "Rebuilds the index from the annotation already "
+                   "installed -- about an hour of CPU, ~32 GB of RAM and "
+                   "~30 GB of disk. Use this when the index and the "
+                   "annotation have drifted apart, or to build one for a "
+                   "different read length: an index built for the wrong "
+                   "read length works and quietly loses junction "
+                   "sensitivity.",
     },
     "MSIsensor2 models": {
         "step": "msi-models",
@@ -204,9 +244,18 @@ class Maintenance:
                 "--data-dir", self.data_dir, "--print"]
 
     def update_argv(self, step, cosmic=None, extra=None):
+        """
+        The installer command for one update.
+
+        `step` may be a list. Some upgrades are not one step: changing the
+        GENCODE annotation without rebuilding the STAR index leaves the
+        aligner finding junctions from one annotation while the caller
+        names genes from another, so the two run together or not at all.
+        """
+        steps = [step] if isinstance(step, str) else list(step)
         argv = [self.python_exe,
                 os.path.join(self.script_dir, "install_pipeline.py"),
-                "--only", step, "--force",
+                "--only", *steps, "--force",
                 "--data-dir", self.data_dir,
                 "--repo", self.script_dir,
                 # Colour codes would be written into the log and shown as

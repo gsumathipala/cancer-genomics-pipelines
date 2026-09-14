@@ -1,5 +1,6 @@
+{#- Created by Brainstorm, 2026. -#}
 {% extends "base.html" %}
-{% block title %}Runs &middot; Cancer DNA Pipeline{% endblock %}
+{% block title %}Runs &middot; Cancer Genomics Pipelines{% endblock %}
 {% block content %}
 
 {% if db_notice %}
@@ -60,13 +61,16 @@
 {% if not jobs %}
   <div class="empty">
     <p>No runs yet.</p>
-    <p><a class="button" href="{{ url_for('new_run') }}">Start a run</a></p>
+    {# The chooser, not the DNA form. This is where a first-time user
+       starts, and sending them straight to one assay's form asks them to
+       have already made the choice the chooser exists to present. #}
+    <p><a class="button" href="{{ url_for('choose_pathway') }}">Start a run</a></p>
   </div>
 {% else %}
 <table class="grid">
   <thead>
     <tr>
-      <th>Started</th><th>Patient / specimen</th><th>Sample</th>
+      <th>Started</th><th>Assay</th><th>Patient / specimen</th><th>Sample</th>
       <th>Status</th><th>Progress</th><th></th>
     </tr>
   </thead>
@@ -74,6 +78,10 @@
   {% for j in jobs %}
     <tr>
       <td class="mono small">{{ (j.started or '')[:19].replace('T',' ') or '&mdash;'|safe }}</td>
+      {# Which pipeline produced this run. A list mixing DNA and RNA runs
+         with no column saying which is a list where two runs of the same
+         specimen look like a duplicate. #}
+      <td class="small">{{ 'RNA' if j.assay == 'rna' else 'DNA' }}</td>
       <td>{{ j.patient_id or '—' }}</td>
       <td class="mono small">{{ j.sample or '—' }}</td>
       <td><span class="status {{ j.status }}">{{ j.status }}</span></td>

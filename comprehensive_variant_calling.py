@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Created by Brainstorm, 2026.
 """
 comprehensive_variant_calling.py
 ================================
@@ -1569,7 +1570,7 @@ def run_mutect2(tumour_bam, tumour_name, ref, output_vcf,
                 germline_resource=None, panel_of_normals=None,
                 f1r2_dir=None, tmp_dir=None,
                 log_path=None, dry_run=False,
-                intervals=None, interval_padding=0):
+                intervals=None, interval_padding=0, extra_args=None):
     """
     GATK Mutect2: The gold standard for somatic SNV and indel calling.
 
@@ -1606,6 +1607,8 @@ def run_mutect2(tumour_bam, tumour_name, ref, output_vcf,
         normal_name:       Normal sample name (must match @RG SM tag).
         germline_resource: gnomAD VCF for germline filtering.
         panel_of_normals:  Panel of Normals VCF for artefact subtraction.
+        extra_args:        Already-split extra GATK arguments, appended
+                           verbatim after everything this function builds.
         f1r2_dir:          Directory for F1R2 tarballs.
         tmp_dir:           Temporary directory.
         log_path:          Log file path.
@@ -1651,6 +1654,13 @@ def run_mutect2(tumour_bam, tumour_name, ref, output_vcf,
     # thousand, and the surviving PASS calls include singletons sitting on
     # one or two stray reads.
     cmd += _interval_args(intervals, interval_padding)
+
+    # Appended LAST on purpose. GATK takes the last occurrence of a
+    # repeated argument, so a setting passed through here overrides the
+    # equivalent one built above rather than being silently ignored --
+    # which is what an escape hatch has to do to be worth having.
+    if extra_args:
+        cmd += list(extra_args)
 
     code = run_command(cmd, tag="Mutect2", log_path=log_path, dry_run=dry_run)
     return code == 0
@@ -2389,7 +2399,6 @@ def tag_foldback_insertions(vcf_path, ref, min_match=FOLDBACK_MIN_MATCH,
             except OSError:
                 pass
 
-    ok = True
     for cmd, tag in (
         (["bgzip", "-f", ann_path], "Foldback bgzip"),
         (["tabix", "-f", "-s", "1", "-b", "2", "-e", "2", ann_path + ".gz"],
@@ -3042,6 +3051,16 @@ _RESUME_IGNORED_PARAMS = frozenset({
     # kept, not which reference is used.
     "coverage_bed", "coverage_min_depth", "coverage_min_mapq",
     "coverage_min_baseq", "reference_dir",
+    # Panel profiles are applied BEFORE this comparison runs, so what gets
+    # compared is the settings the profile produced -- interval padding,
+    # the VAF floor, the skipped steps -- rather than its name. Comparing
+    # the name as well would refuse a resume for a profile that was renamed
+    # while setting exactly the same values, and would MISS a profile that
+    # kept its name while its contents changed. The values are the honest
+    # thing to compare; these are the flags that only say where they came
+    # from.
+    "panel", "panel_file", "panel_bed", "list_panels", "describe_panel",
+    "new_panel_template", "save_panel_as", "panel_id",
 })
 
 
@@ -3326,6 +3345,68 @@ def build_parser():
                          "somatic calls on the difference between two "
                          "people. Use one directory per patient.")
 
+    # --- Panel / assay profile ---
+    # Everything below this line used to have to be set flag by flag, from
+    # memory, per kit. A profile is the same settings named once: see
+    # panel_profiles.py for what each one carries and why. The profile only
+    # ever fills in what the command line did not state, so adding --panel
+    # to a command that already works cannot change it.
+    panel = parser.add_argument_group(
+        "panel / assay profile",
+        "Configure the run by naming the assay instead of setting nine "
+        "flags. Explicit flags always win over the profile.")
+    panel.add_argument("--panel", default=None, metavar="ID",
+                       help="Panel profile to configure this run from, e.g. "
+                            "'illumina-tso500', 'thermo-oncomine-cav3', "
+                            "'qiagen-qiaseq-dna', or one of the generic "
+                            "shapes ('generic-capture', 'generic-amplicon', "
+                            "'generic-hotspot', 'ctdna-capture', 'wes', "
+                            "'wgs'). Run --list-panels for the full set. The "
+                            "profile chooses interval padding, the VAF and "
+                            "depth floors, whether duplicate marking and "
+                            "BQSR are meaningful for that chemistry, the UMI "
+                            "layout and which report statistics the "
+                            "footprint can support -- each of which is "
+                            "silent when it is wrong.")
+    panel.add_argument("--panel-file", action="append", default=[],
+                       metavar="JSON",
+                       help="Additional profile file or directory to load, "
+                            "repeatable. This is how a kit that is not built "
+                            "in gets added: write the JSON once and every "
+                            "run can name it. Profiles are also picked up "
+                            "automatically from ~/.config/cancer_pipeline/"
+                            "panels and $CANCER_PIPELINE_PANEL_DIR.")
+    panel.add_argument("--panel-bed", default=None, metavar="BED",
+                       help="The kit's target BED, used for BOTH --intervals "
+                            "and --coverage-bed. They are almost always the "
+                            "same file, and setting only one of them is the "
+                            "commonest way to end up with a run that either "
+                            "calls genome-wide or makes no coverage "
+                            "statement. Either flag, given explicitly, still "
+                            "wins over this. No profile ships a BED -- "
+                            "vendor BEDs are licensed, version-specific "
+                            "content that must come from your kit.")
+    panel.add_argument("--list-panels", action="store_true",
+                       help="List every known panel profile and exit.")
+    panel.add_argument("--describe-panel", default=None, metavar="ID",
+                       help="Print everything a profile sets, with its "
+                            "caveats, and exit.")
+    panel.add_argument("--new-panel-template", default=None, metavar="JSON",
+                       help="Write a starting-point profile for a kit that "
+                            "is not built in, and exit. Combine with --panel "
+                            "to base it on an existing profile.")
+    panel.add_argument("--save-panel-as", default=None, metavar="JSON",
+                       help="After the settings are resolved, save them as a "
+                            "reusable profile. The intended workflow is to "
+                            "tune a run with ordinary flags under --dry-run "
+                            "until it is right, then save it so the next "
+                            "operator names the assay instead of "
+                            "reconstructing it. Target BED paths are "
+                            "deliberately not stored.")
+    panel.add_argument("--panel-id", default=None, metavar="ID",
+                       help="Id to give the profile written by "
+                            "--save-panel-as (default: the file's stem).")
+
     # --- Resources ---
     res = parser.add_argument_group("annotation resources")
     res.add_argument("--dbsnp", default=None,
@@ -3427,6 +3508,15 @@ def build_parser():
                           "depth filter of its own and will PASS a variant "
                           "supported by two reads. Records are tagged, never "
                           "removed. 0 disables it.")
+    res.add_argument("--mutect2-extra-args", default=None,
+                     help="Extra arguments forwarded verbatim to Mutect2, as "
+                          "one quoted string. The escape hatch for a kit "
+                          "whose chemistry needs a caller setting this "
+                          "script has no flag of its own for -- e.g. "
+                          "'--dont-use-soft-clipped-bases true' on an "
+                          "amplicon panel whose primers were not trimmed. "
+                          "Nothing here validates it: GATK does, at the "
+                          "start of the calling step.")
     res.add_argument("--cosmic", default=None,
                      help="COSMIC VCF for known somatic cancer variants. "
                           "Download from https://cancer.sanger.ac.uk/cosmic")
@@ -3681,6 +3771,269 @@ def load_qc_manifest(manifest_path):
     return samples
 
 
+# =============================================================================
+# SECTION 13c: PANEL PROFILES
+# =============================================================================
+# Two things happen here, and they happen at different moments in the run.
+#
+#   1. configure_from_panel() runs immediately after parsing, because a
+#      profile changes what validate_args() is validating.
+#   2. finalise_panel_targets() runs after the reference is resolved,
+#      because both of the things it does -- measuring the BED and checking
+#      its contig naming -- are questions about the BED AND the genome
+#      together, and the genome may still have been a name at parse time.
+#
+# panel_profiles.py is imported lazily and its absence is tolerated, the
+# same way pcgr_report.py and coverage_report.py are: this file must keep
+# working when only it was copied somewhere. The difference is that asking
+# for --panel when the module is missing is FATAL rather than skipped --
+# the operator asked for a configuration and would otherwise get a
+# differently configured run that said nothing about it.
+
+
+def _load_panel_module(required, parser=None):
+    """Import panel_profiles.py from beside this script, or None."""
+    try:
+        import panel_profiles
+        return panel_profiles
+    except ImportError as exc:
+        if required:
+            message = (f"--panel needs panel_profiles.py beside this script, "
+                       f"and it could not be imported ({exc}). Copy it into "
+                       f"the same directory, or configure the run with "
+                       f"explicit flags.")
+            if parser:
+                parser.error(message)
+            print(f"[ERROR] {message}")
+            sys.exit(1)
+        return None
+
+
+def configure_from_panel(args, parser, argv):
+    """
+    Apply --panel-bed and --panel to the parsed arguments, in place.
+
+    Returns (record, explicit): the record goes into the run manifest so a
+    later reader can see which assay the numbers belong to, and `explicit`
+    is the set of dests the command line named, which the caller needs
+    again later for the same precedence rule.
+
+    ORDER MATTERS. --panel-bed is applied BEFORE the profile, so that a
+    profile which sets coverage thresholds is reasoning about a run that
+    already has a BED.
+    """
+    record = {"panel": None, "applied": [], "overridden": [],
+              "panel_bed": None, "notes": []}
+
+    wants_panel = bool(args.panel or args.save_panel_as)
+    panel_profiles = _load_panel_module(required=wants_panel, parser=parser)
+    explicit = set()
+    if panel_profiles is not None:
+        explicit = set(panel_profiles.explicit_dests(parser, argv))
+
+    # --- one BED, two flags -------------------------------------------
+    # --intervals and --coverage-bed are separate because they answer
+    # different questions, and a laboratory occasionally reports coverage
+    # over a narrower subset than it calls over. In every other case they
+    # are the same file, and requiring it twice means one of them gets
+    # forgotten -- which is either a genome-wide call set or a run that
+    # makes no coverage statement, both silent.
+    if args.panel_bed:
+        if not os.path.isfile(args.panel_bed):
+            parser.error(f"--panel-bed not found: {args.panel_bed}")
+        record["panel_bed"] = os.path.abspath(args.panel_bed)
+        for dest in ("intervals", "coverage_bed"):
+            # Both default to None, so a value already here can only have
+            # come from the command line. Testing the value rather than
+            # consulting `explicit` keeps this right even when
+            # panel_profiles.py could not be imported and `explicit` is
+            # therefore empty.
+            if getattr(args, dest):
+                record["notes"].append(
+                    f"--{dest.replace('_', '-')} was given explicitly, so "
+                    f"--panel-bed did not set it.")
+                continue
+            setattr(args, dest, args.panel_bed)
+            # Counts as explicit from here on. A site profile may name a
+            # BED of its own -- the schema allows it, for a laboratory
+            # whose design file lives at a fixed path -- and without this
+            # it would overwrite the one the operator just named on the
+            # command line, which is the opposite of the precedence rule
+            # everything else here follows.
+            explicit.add(dest)
+
+    if not args.panel:
+        return record, explicit
+
+    # --- the profile ---------------------------------------------------
+    try:
+        registry = panel_profiles.available_panels(
+            extra_files=args.panel_file,
+            warn=lambda msg: print(f"[WARN] {msg}"))
+        profile = panel_profiles.resolve_panel(args.panel, registry)
+        applied, overridden = panel_profiles.apply_profile(
+            args, profile, explicit)
+    except panel_profiles.PanelError as exc:
+        parser.error(str(exc))
+        return record, explicit           # unreachable; keeps linters quiet
+
+    print()
+    print(panel_profiles.format_application(profile, applied, overridden))
+
+    # Recorded as the profile's own dict rather than as a name, so the
+    # manifest still describes the run after somebody edits or deletes the
+    # profile it was configured from. A run record that says only
+    # "--panel our-lung-panel" is worthless a year later.
+    record["panel"] = dict(profile)
+    record["applied"] = [[k, v] for k, v in applied]
+    record["overridden"] = [[k, v] for k, v in overridden]
+    return record, explicit
+
+
+def finalise_panel_targets(args, ref, dirs, record, explicit):
+    """
+    Make the BED usable against this reference, and measure it.
+
+    THE CONTIG PROBLEM. Vendor BEDs arrive in whichever naming their
+    designer used: Ensembl writes "1" and "MT", UCSC and the hg38 this
+    pipeline installs write "chr1" and "chrM". A mismatched BED makes GATK
+    abort, which is at least loud -- but the SAME file handed to the
+    coverage check simply finds no reads in any region, and the report then
+    states that none of the panel was covered. That is a confident,
+    entirely wrong clinical statement, so the mismatch is detected and a
+    renamed copy written beside the run.
+
+    THE DENOMINATOR PROBLEM. PCGR divides by an assumed 34 Mb for a
+    TARGETED assay unless told otherwise, so a 2 Mb panel reports a TMB
+    about 17x too low and says nothing about having done so. The footprint
+    is therefore measured from the BED actually being used -- which beats
+    any published figure, because it accounts for the kit version, the
+    build and whatever the laboratory spiked in.
+    """
+    panel_profiles = _load_panel_module(required=False)
+    if panel_profiles is None:
+        if args.intervals or args.coverage_bed:
+            print("[WARN] panel_profiles.py not importable: the target BED "
+                  "was not checked against the reference's contig naming, "
+                  "and no TMB denominator was measured from it.")
+        return
+
+    # --- contig naming -------------------------------------------------
+    # Cached by source path: --intervals and --coverage-bed are usually the
+    # same file, and translating it twice would write the same copy twice
+    # and print the same paragraph twice, which reads like two separate
+    # problems.
+    translated = {}
+    for dest in ("intervals", "coverage_bed"):
+        bed = getattr(args, dest, None)
+        if not bed:
+            continue
+        if bed not in translated:
+            fixed, note = panel_profiles.harmonise_bed_contigs(
+                bed, ref, dirs["panel"], dry_run=args.dry_run)
+            translated[bed] = fixed
+            if note:
+                print(f"[INFO] {note}")
+                record["notes"].append(note)
+        if translated[bed] != bed:
+            setattr(args, dest, translated[bed])
+
+    # --- footprint ------------------------------------------------------
+    # Measured from --intervals when there is one, because that is the
+    # region variants can actually be called in; --coverage-bed is the
+    # fallback for a run that reports coverage without restricting the
+    # caller.
+    bed = args.intervals or args.coverage_bed
+    if not bed:
+        return
+    if not os.path.isfile(bed):
+        # A renamed copy that a dry run did not actually write. The base
+        # count is a property of the regions, not of what they are called,
+        # so fall back to the file the operator supplied rather than
+        # reporting no footprint at all -- a dry run is where somebody
+        # checks the denominator before committing hours to it.
+        bed = record.get("panel_bed") or next(
+            (k for k, v in translated.items() if v == bed), bed)
+    measured = panel_profiles.footprint_mb(bed)
+    if measured is None:
+        print(f"[WARN] could not measure a target footprint from "
+              f"{os.path.basename(bed)}; TMB, if requested, will use PCGR's "
+              f"assumed default.")
+        return
+
+    record["target_size_mb_measured"] = measured
+    nominal = (record.get("panel") or {}).get("nominal_target_size_mb")
+    note = panel_profiles.target_size_note(measured, nominal)
+    if note:
+        print(f"[INFO] {note}")
+        record["notes"].append(note)
+
+    # Only filled in when the command line did not state it. Somebody who
+    # passes --pcgr-target-size-mb has a reason -- a callable-bases figure
+    # from their validation, say -- and measuring the raw BED would quietly
+    # replace a considered number with a cruder one.
+    if args.pcgr_target_size_mb is None and "pcgr_target_size_mb" \
+            not in explicit:
+        args.pcgr_target_size_mb = measured
+        print(f"[INFO] TMB denominator set to the measured footprint "
+              f"({measured:.3f} Mb). Pass --pcgr-target-size-mb to override "
+              f"it, e.g. with a callable-bases figure from your validation.")
+        record["notes"].append(
+            f"TMB denominator taken from the target BED: {measured:.3f} Mb.")
+
+    advice = panel_profiles.tmb_advice(measured, args.pcgr_estimate_tmb)
+    if advice:
+        print(f"[WARN] {advice}")
+        record["notes"].append(advice)
+
+
+def save_panel_profile(args, record, explicit=frozenset()):
+    """
+    Write the run's effective settings out as a reusable profile.
+
+    The other half of customisation: a laboratory bringing up a new kit
+    tunes it with ordinary flags under --dry-run, and this turns the
+    command line they arrived at into something the next operator can name.
+    """
+    panel_profiles = _load_panel_module(required=True)
+    stem = os.path.splitext(os.path.basename(args.save_panel_as))[0]
+    base = (record.get("panel") or {})
+    panel_id = args.panel_id or stem
+    notes = None
+    if base:
+        notes = [
+            f"Derived from the profile '{base.get('id')}' "
+            f"({base.get('name')}), with this run's settings applied on top. "
+            f"Review it before using it on another assay.",
+            "Target BEDs are not stored in a profile: pass --panel-bed when "
+            "you use it.",
+        ]
+    profile = panel_profiles.profile_from_args(
+        args,
+        panel_id=panel_id,
+        # Named after the id rather than after the profile it was derived
+        # from: a file called mylab-spe.json whose name says "QIAseq
+        # Targeted DNA Panel" is the sort of thing that gets mistaken for
+        # the vendor's own profile a year later.
+        name=panel_id,
+        manufacturer=base.get("manufacturer") or "local",
+        chemistry=base.get("chemistry") or "hybrid-capture",
+        notes=notes,
+        # Keep the denominator only if the operator stated it themselves;
+        # one measured from this run's BED describes that design, not the
+        # assay.
+        keep_target_size="pcgr_target_size_mb" in explicit,
+    )
+    try:
+        path = panel_profiles.save_profile(profile, args.save_panel_as)
+    except (panel_profiles.PanelError, OSError) as exc:
+        print(f"[WARN] could not save the panel profile: {exc}")
+        return
+    print(f"[INFO] Saved this run's settings as panel profile "
+          f"'{profile['id']}' in {path}. Use it with "
+          f"--panel-file {path} --panel {profile['id']}.")
+
+
 def validate_args(args, parser):
     """Validate argument combinations that argparse can't catch."""
     if args.threads < 1:
@@ -3765,8 +4118,23 @@ def main():
     Main entry point: parse arguments, validate inputs, run the
     10-step comprehensive variant calling pipeline.
     """
+    # --list-panels, --describe-panel and --new-panel-template answer a
+    # question that has nothing to do with a run, so they must work without
+    # --output-dir and --reference. argparse cannot express "these required
+    # arguments are not required today", so they are handled from sys.argv
+    # before the real parser runs. They are still declared on the parser, so
+    # they appear in --help and a misspelling is still rejected.
+    panel_module = _load_panel_module(required=False)
+    if panel_module is not None:
+        panel_module.handle_panel_queries()
+
     parser = build_parser()
     args = parser.parse_args()
+
+    # Before validate_args: a profile changes the values being validated.
+    panel_record, panel_explicit = configure_from_panel(
+        args, parser, sys.argv[1:])
+
     validate_args(args, parser)
 
     started = datetime.now(timezone.utc)
@@ -3802,6 +4170,11 @@ def main():
         "annotated": os.path.join(output_dir, "annotated"),
         "pcgr": os.path.join(output_dir, "pcgr"),
         "coverage": os.path.join(output_dir, "coverage"),
+        # Anything derived from the panel BED -- currently a contig-renamed
+        # copy. Kept inside the run so the run is self-describing about
+        # what it actually called over, and so the laboratory's own copy of
+        # a controlled vendor document is never edited.
+        "panel": os.path.join(output_dir, "panel"),
         "metrics": os.path.join(output_dir, "metrics"),
         "stats": os.path.join(output_dir, "stats"),
         "logs": os.path.join(output_dir, "logs"),
@@ -3814,6 +4187,14 @@ def main():
     # ---- Reference genome ----
     ref = ensure_reference(args)
     ensure_indices(ref, args.threads, dry_run=args.dry_run)
+
+    # Now that the genome is a real indexed FASTA, the target BED can be
+    # checked against its contig naming and measured for the TMB
+    # denominator. Both need the reference, which is why neither happened
+    # at parse time.
+    finalise_panel_targets(args, ref, dirs, panel_record, panel_explicit)
+    if args.save_panel_as:
+        save_panel_profile(args, panel_record, panel_explicit)
 
     # ---- Discover or use specified FASTQs ----
     # THREE INPUT MODES (priority order):
@@ -3961,6 +4342,16 @@ def main():
         print(f"Normal  : {normal['name']}")
     else:
         print("Mode    : tumour-only (no matched normal)")
+    if panel_record.get("panel"):
+        print(f"Panel   : {panel_record['panel']['name']} "
+              f"[{panel_record['panel']['id']}]")
+    elif args.intervals or args.coverage_bed:
+        print("Panel   : none named (target BED given directly)")
+    else:
+        # Worth one line: the commonest configuration mistake on a panel
+        # run is to leave the target out entirely, and it is invisible
+        # until the VCF turns out to hold tens of thousands of calls.
+        print("Panel   : none -- no target restriction (whole genome)")
     print(f"COSMIC  : {args.cosmic or 'not provided'}")
     print(f"Ref     : {ref}")
     print(f"Threads : {args.threads}")
@@ -3990,6 +4381,10 @@ def main():
         "tumour": tumour["name"],
         "normal": normal["name"] if normal else None,
         "cosmic": args.cosmic,
+        # The assay, as data rather than as a name: the profile's own
+        # contents are copied in, so this manifest still describes the run
+        # after the profile it came from is edited or deleted.
+        "panel_profile": panel_record,
         "steps_completed": [],
     }
 
@@ -4316,6 +4711,8 @@ def main():
             dry_run=args.dry_run,
             intervals=args.intervals,
             interval_padding=args.interval_padding,
+            extra_args=(shlex.split(args.mutect2_extra_args)
+                        if args.mutect2_extra_args else None),
         )
         if not ok:
             print("[FATAL] Mutect2 failed.")

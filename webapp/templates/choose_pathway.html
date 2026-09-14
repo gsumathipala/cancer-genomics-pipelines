@@ -1,0 +1,83 @@
+{#- Created by Brainstorm, 2026. -#}
+{% extends "base.html" %}
+{% block title %}Start a run &middot; Cancer Genomics Pipelines{% endblock %}
+{% block content %}
+
+<h1>What are you looking for?</h1>
+<p class="hint">Pick the pathway that matches the library you are about to
+  analyse. If you are unsure, the kit&rsquo;s documentation will say whether
+  it produces a DNA library, an RNA library, or both from one specimen.</p>
+
+<div class="pathways">
+
+  <a class="pathway dna" href="{{ url_for('new_run') }}">
+    <h2>DNA &mdash; variants</h2>
+    <p class="lead">Point mutations and small insertions/deletions.</p>
+    <ul>
+      <li><strong>Finds:</strong> SNVs and indels, with actionability tiers,
+        TMB and mutational signatures where the panel is large enough.</li>
+      <li><strong>Needs:</strong> the kit&rsquo;s target BED.</li>
+      <li><strong>Does not find:</strong> gene fusions, copy-number changes.</li>
+    </ul>
+    <span class="go">Start a DNA run &rarr;</span>
+  </a>
+
+  <a class="pathway rna" href="{{ url_for('new_rna_run') }}">
+    <h2>RNA &mdash; fusions</h2>
+    <p class="lead">Gene fusions and splice events.</p>
+    <ul>
+      <li><strong>Finds:</strong> fusions such as <em>EML4&ndash;ALK</em>,
+        <em>BCR&ndash;ABL1</em>, <em>NTRK</em> rearrangements, and
+        <em>MET</em> exon&nbsp;14 skipping.</li>
+      <li><strong>Needs:</strong> the GENCODE annotation and a STAR index
+        (installed with <code>--with-rna</code>).</li>
+      <li><strong>Does not find:</strong> point mutations or indels.</li>
+    </ul>
+    <span class="go">Start an RNA run &rarr;</span>
+  </a>
+
+  <a class="pathway both" href="{{ url_for('new_hybrid_run') }}">
+    <h2>Both &mdash; hybrid panel</h2>
+    <p class="lead">One specimen, a DNA library and an RNA library,
+      reported together.</p>
+    <ul>
+      <li><strong>Finds:</strong> everything both pathways find, in
+        <strong>one</strong> clinical report.</li>
+      <li><strong>Needs:</strong> both sets of reference data, and both sets
+        of FASTQs.</li>
+      <li>Queues the two runs for you and links them, so the combined
+        report happens without anyone having to remember to ask for it.</li>
+    </ul>
+    <span class="go">Start a hybrid run &rarr;</span>
+  </a>
+
+</div>
+
+{% if hybrid_pairs %}
+<section class="card">
+  <h2>Kits known to have both halves</h2>
+  <p class="hint">These profiles name their partner, so choosing one half on
+    the hybrid form offers the other automatically.</p>
+  <ul>
+    {% for p in hybrid_pairs %}
+    <li class="hint"><strong>{{ p.name }}</strong> ({{ p.manufacturer }})
+      &mdash; <code>{{ p.dna }}</code> + <code>{{ p.rna }}</code></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Not sure?</h2>
+  <p class="hint">A DNA-only run is never wrong, only incomplete: it will
+    miss a fusion that the specimen carries. An RNA run cannot be
+    substituted for it &mdash; the two answer different questions and
+    neither is a superset of the other.</p>
+  <p class="hint">If the kit produces both libraries and you run only one
+    now, you can run the other later and link them from the RNA form; the
+    combined report is produced then.</p>
+  <p class="hint"><a href="{{ url_for('panels_page') }}">Browse the panel
+    profiles</a> to see exactly what each kit is configured to do.</p>
+</section>
+
+{% endblock %}

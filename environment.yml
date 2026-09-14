@@ -1,4 +1,5 @@
-# Conda environment for the cancer DNA pipeline.
+# Created by Brainstorm, 2026.
+# Conda environment for the Cancer Genomics Pipelines (DNA branch).
 #
 #   mamba env create -f environment.yml     # mamba solves this far faster
 #   conda activate cancer_pipeline

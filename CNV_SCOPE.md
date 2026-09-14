@@ -1,3 +1,4 @@
+<!-- Created by Brainstorm, 2026. -->
 # Somatic copy number: scope for when normals exist
 
 Status: **not implemented.** This is the design to build against, written
@@ -45,6 +46,11 @@ captured one as deleted.
 ## 2. What has to be collected
 
 **Normal samples sequenced on this assay, in this lab.**
+
+*(On "this assay": `--panel` records which one a run used, in the run manifest
+and in the report — see [PANELS.md](PANELS.md). A read-count panel of normals
+is only valid for the assay it was built from, so being able to say which
+assay a BAM came from is a prerequisite for building one at all.)*
 
 | Requirement | Why |
 |---|---|
