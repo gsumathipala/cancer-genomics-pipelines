@@ -1,24 +1,38 @@
 <!-- Created by Brainstorm, 2026. -->
-# Cancer Genomics Pipelines — installer bundle
+# Cancer Genomics Pipelines
 
-Everything needed to stand this pipeline up on a new machine. Copy this whole
-directory across, run one command, and you get the analysis environment, the
-reference genome, six resource databases, the clinical reporter and its data.
+> ## ⚠️ RESEARCH USE ONLY — NOT A VALIDATED DIAGNOSTIC SYSTEM
+>
+> This software must **not** be used as the sole basis for a clinical
+> decision. It has been validated on **one sample, one assay, tumour-only**.
+> No call it produces has been checked against an independent method. The
+> RNA branch has **no validation at all**.
+>
+> Clinical deployment would need a validation set, orthogonal confirmation
+> and a matched normal. Read
+> **[Read before clinical use](#read-before-clinical-use)** before you do
+> anything else — it lists, specifically, what is not established.
 
-Two branches off one shared QC stage: **DNA** for somatic SNVs and indels,
-and **RNA** for gene fusions (`--with-rna`, opt-in — see
-[RNA.md](RNA.md)).
+Somatic variant and fusion calling for Illumina cancer panels. Two branches
+off one shared QC stage: **DNA** for SNVs and indels (GATK/Mutect2), and
+**RNA** for gene fusions (STAR + Arriba), with clinical interpretation
+through PCGR.
+
+Everything needed to stand it up on a new machine: copy this directory
+across, run one command, and you get the analysis environment, the reference
+genome, six resource databases, the clinical reporter and its data. The RNA
+branch is opt-in (`--with-rna` — see [RNA.md](RNA.md)).
 
 > **New here?** [PIPELINE_ANATOMY.md](PIPELINE_ANATOMY.md) is a full
 > dissection — what every tool does, how it works, the exact command that
 > runs it, and the failure modes that are silent. It is written so someone
 > who has never built one of these could rebuild it.
 
-**Research use only. Not a validated diagnostic system.** See
-[Read before clinical use](#read-before-clinical-use).
-
-Nothing here is patient data. This bundle is code, configuration and
-documentation only.
+**Nothing here is patient data.** This bundle is code, configuration and
+documentation only — no sequencing data, no reference databases, and no
+clinical records have ever been committed to it. The reference data it needs
+is downloaded at install time from its original sources, each under its own
+licence.
 
 ---
 
