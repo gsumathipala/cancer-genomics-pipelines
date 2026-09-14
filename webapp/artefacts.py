@@ -57,6 +57,7 @@ SECURITY
 """
 
 import glob
+import hashlib
 import os
 
 # How a file is offered. HTML and PDF open in a tab; everything else
@@ -81,6 +82,34 @@ GROUPS = [
      "What was run, with which settings and which reference data. Needed "
      "to reproduce or audit a result, rarely needed to read one."),
 ]
+
+
+def artefact_id(path, run_dir, output_dir):
+    """
+    A stable id for one file: derived from WHERE it is, never from
+    where it happens to sit in a list.
+
+    THIS IS NOT A MICRO-OPTIMISATION. These reports are meant to be read
+    while the run is still going -- that is the point of the coverage and
+    library-QC steps. So the set of files GROWS under the page: a batch run
+    writing SAMPLE_A's coverage report after the page was rendered shifted
+    every position after it, and a link labelled "Read quality" then served
+    the previous sample's coverage report instead. A 200, the wrong file,
+    and nothing anywhere to say so.
+
+    The id is a digest of the path relative to the run, so it survives new
+    files appearing, files being removed, and the run directory being
+    moved.
+    """
+    for root in (output_dir, run_dir):
+        if root:
+            try:
+                rel = os.path.relpath(path, root)
+            except ValueError:            # different drives, on Windows
+                continue
+            if not rel.startswith(".."):
+                return hashlib.sha1(rel.encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha1(os.path.abspath(path).encode("utf-8")).hexdigest()[:12]
 
 
 def _entry(path, label, what, group, action=VIEW, caution=None):
@@ -309,10 +338,11 @@ def collect(job_snapshot, run_dir, output_dir):
             "The raw output of the external tools for one sample.",
             "record", DOWNLOAD))
 
-    # Stable ids assigned last, so they follow display order and a link
-    # does not change meaning when a later run adds a file.
-    for index, item in enumerate(items):
-        item["id"] = index
+    # Ids derived from each file's own location, NOT from its position in
+    # this list -- see artefact_id(). Display order is still the order
+    # above; only the identity is independent of it.
+    for item in items:
+        item["id"] = artefact_id(item["path"], run_dir, output_dir)
     return items
 
 
@@ -383,22 +413,25 @@ def absent_notes(job_snapshot, items, meta):
     return notes
 
 
-def resolve(items, index, run_dir, output_dir):
+def resolve(items, artefact, run_dir, output_dir):
     """
     The path for one artefact id, re-checked for containment.
 
-    Defence in depth. The index is not a path and cannot express one, but
-    a job record is a file on disk, and a file on disk can be edited. This
+    Defence in depth. The id is a digest and cannot express a path, but a
+    job record is a file on disk and a file on disk can be edited. This
     confirms the resolved path really does sit inside the run's own two
     directories before anything is served.
+
+    Returns (path, item) or (None, None).
     """
-    if index < 0 or index >= len(items):
-        return None
-    path = os.path.realpath(items[index]["path"])
+    match = next((i for i in items if i["id"] == artefact), None)
+    if match is None:
+        return None, None
+    path = os.path.realpath(match["path"])
     for root in (run_dir, output_dir):
         if not root:
             continue
         root = os.path.realpath(root)
         if path == root or path.startswith(root + os.sep):
-            return path
-    return None
+            return path, match
+    return None, None

@@ -126,7 +126,7 @@
         {% for it in items %}
         <li>
           <a class="filelink"
-             href="{{ url_for('job_file', job_id=job.id, index=it.id) }}"
+             href="{{ url_for('job_file', job_id=job.id, artefact=it.id) }}"
              {% if it.action == 'view' %}target="_blank" rel="noopener"{% endif %}>
             <span class="filename">{{ it.label }}</span>
             <span class="fileaction">{{ 'open' if it.action == 'view' else 'download' }}{% if it.size %} · {{ human_size(it.size) }}{% endif %}</span>
@@ -151,35 +151,11 @@
   </section>
   {% endif %}
 
-  <div class="actions" id="rnareports">
-    {% for index, sample in (rna_qc_reports or []) %}
-      <a class="button ghost" target="_blank"
-         href="{{ url_for('job_rna_report', job_id=job.id, kind='qc', index=index) }}">
-        Library QC: {{ sample }}</a>
-    {% endfor %}
-    {% for index, sample in (rna_fusion_reports or []) %}
-      <a class="button ghost" target="_blank"
-         href="{{ url_for('job_rna_report', job_id=job.id, kind='fusion', index=index) }}">
-        Fusions: {{ sample }}</a>
-    {% endfor %}
-  </div>
-  {% if job.assay == 'rna' and rna_fusion_reports and not rna_qc_reports %}
-    <p class="small warn">There is a fusion table but no library QC report,
-      so nothing here says whether an empty or sparse result reflects the
-      specimen or the library. Re-run without <code>--skip-steps rnaqc</code>.</p>
-  {% endif %}
-  {% if paired_run_id %}
-    <p class="small">Linked DNA run:
-      <a href="{{ url_for('job_view', job_id=paired_run_id) }}">{{ paired_run_id }}</a>
-      &mdash; fusions and SNVs from one specimen are one result.</p>
-  {% endif %}
-  <div class="actions" id="coverage">
-    {% for index, sample in coverage %}
-      <a class="button ghost" target="_blank"
-         href="{{ url_for('job_coverage', job_id=job.id, index=index) }}">
-        Coverage: {{ sample }}</a>
-    {% endfor %}
-  </div>
+  {# The per-report button rows that used to live here are gone. They
+     duplicated the artefact list above, and they addressed files by
+     POSITION in a glob -- which shifts the moment the run writes another
+     sample's report, so a link could serve a different file than its
+     label. The list above addresses each file by a digest of its path. #}
   {% if not coverage and coverage_bed %}
     <p class="small" id="covhint">Target coverage against
       <code>{{ coverage_bed }}</code> is checked after alignment; the report

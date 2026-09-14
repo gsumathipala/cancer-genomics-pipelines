@@ -1790,21 +1790,29 @@ def job_results(job_id):
                                                              "dir": ""}
     pdf_path = os.path.join(job.run_dir, f"report_{job_id}.pdf")
 
+    # Links are built from the run's artefact list so they carry the same
+    # STABLE ids the job page uses. Addressing these by position in a glob
+    # was the bug: the set grows while the run is going, and a link then
+    # serves a different file than the one it is labelled with.
+    def links(paths, suffix):
+        return [(artefacts.artefact_id(p, job.run_dir, output_dir),
+                 os.path.basename(p)[:-len(suffix)]) for p in paths]
+
     # For an RNA run the question "was the sequencing good enough?" is
     # answered by the library-adequacy report, not by target coverage.
     quality = []
     if assay == "rna":
-        quality = [(i, os.path.basename(p)[:-len(".rna_qc.html")])
-                   for i, p in enumerate(
-                       jobs.find_rna_reports(output_dir, "qc"))]
-    fusions = [(i, os.path.basename(p)[:-len(".fusions.html")])
-               for i, p in enumerate(
-                   jobs.find_rna_reports(output_dir, "fusion"))]
+        quality = links(jobs.find_rna_reports(output_dir, "qc"),
+                        ".rna_qc.html")
+    fusions = links(jobs.find_rna_reports(output_dir, "fusion"),
+                    ".fusions.html")
 
     return render_template("results.html", job=job.snapshot(),
                            assay=assay,
                            manifest=manifest, pcgr=pcgr,
-                           coverage=coverage_links(job),
+                           coverage=links(
+                               jobs.find_coverage_reports(output_dir),
+                               ".coverage.html"),
                            coverage_bed=job.meta.get("coverage_bed"),
                            rna_quality=quality, rna_fusions=fusions,
                            has_pdf=os.path.exists(pdf_path),
@@ -1828,25 +1836,6 @@ def job_pcgr(job_id):
     return send_file(pcgr["html"][0])
 
 
-@app.route("/job/<job_id>/coverage")
-@app.route("/job/<job_id>/coverage/<int:index>")
-def job_coverage(job_id, index=0):
-    """
-    Serve one sample's target-coverage report.
-
-    Like the PCGR route, the file is chosen from the run's own coverage
-    directory by index -- never from a path in the request. Available as
-    soon as the pipeline has written it, which is while the run is still
-    going: that is the point of it.
-    """
-    job = manager.get(job_id) or abort(404)
-    reports = jobs.find_coverage_reports(job.meta.get("output_dir"))
-    if not reports:
-        abort(404, "no coverage report for this run -- it needs a target "
-                   "BED, and this run was submitted without one")
-    if index < 0 or index >= len(reports):
-        abort(404, "no coverage report at that index")
-    return send_file(reports[index])
 
 
 def run_artefacts(job):
@@ -1855,8 +1844,8 @@ def run_artefacts(job):
                              job.meta.get("output_dir"))
 
 
-@app.route("/job/<job_id>/file/<int:index>")
-def job_file(job_id, index):
+@app.route("/job/<job_id>/file/<artefact>")
+def job_file(job_id, artefact):
     """
     Serve one of a run's output files.
 
@@ -1871,35 +1860,16 @@ def job_file(job_id, index):
     """
     job = manager.get(job_id) or abort(404)
     items = run_artefacts(job)
-    path = artefacts.resolve(items, index, job.run_dir,
-                             job.meta.get("output_dir"))
+    path, item = artefacts.resolve(items, artefact, job.run_dir,
+                                   job.meta.get("output_dir"))
     if not path or not os.path.exists(path):
         abort(404, "no such output file for this run")
-    item = items[index]
     if item["action"] == artefacts.VIEW:
         return send_file(path)
     return send_file(path, as_attachment=True,
                      download_name=os.path.basename(path))
 
 
-@app.route("/job/<job_id>/rna/<kind>")
-@app.route("/job/<job_id>/rna/<kind>/<int:index>")
-def job_rna_report(job_id, kind, index=0):
-    """
-    Serve one sample's fusion report or RNA library QC report.
-
-    Same rule as the coverage and PCGR routes: the file is chosen from the
-    run's own directory by index, never from a path in the request.
-    """
-    if kind not in ("fusion", "qc"):
-        abort(404)
-    job = manager.get(job_id) or abort(404)
-    reports = jobs.find_rna_reports(job.meta.get("output_dir"), kind)
-    if not reports:
-        abort(404, "no such report for this run yet")
-    if index < 0 or index >= len(reports):
-        abort(404, "no report at that index")
-    return send_file(reports[index])
 
 
 # ---------------------------------------------------------------------------

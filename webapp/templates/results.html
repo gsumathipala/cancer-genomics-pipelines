@@ -47,7 +47,7 @@
     <p>
       {% for index, sample in rna_quality %}
         <a class="button ghost" target="_blank"
-           href="{{ url_for('job_rna_report', job_id=job.id, kind='qc', index=index) }}">
+           href="{{ url_for('job_file', job_id=job.id, artefact=index) }}">
           Library QC: {{ sample }}</a>
       {% endfor %}
     </p>
@@ -60,7 +60,7 @@
     <p>
       {% for index, sample in rna_fusions %}
         <a class="button ghost" target="_blank"
-           href="{{ url_for('job_rna_report', job_id=job.id, kind='fusion', index=index) }}">
+           href="{{ url_for('job_file', job_id=job.id, artefact=index) }}">
           Fusions: {{ sample }}</a>
       {% endfor %}
     </p>
@@ -75,7 +75,7 @@
     <p>
       {% for index, sample in coverage %}
         <a class="button ghost" target="_blank"
-           href="{{ url_for('job_coverage', job_id=job.id, index=index) }}">
+           href="{{ url_for('job_file', job_id=job.id, artefact=index) }}">
           Coverage: {{ sample }}</a>
       {% endfor %}
     </p>
