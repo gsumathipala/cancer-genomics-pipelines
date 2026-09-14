@@ -9,6 +9,14 @@ Two branches off one shared QC stage: **DNA** for somatic SNVs and indels,
 and **RNA** for gene fusions (`--with-rna`, opt-in — see
 [RNA.md](RNA.md)).
 
+> **New here?** [PIPELINE_ANATOMY.md](PIPELINE_ANATOMY.md) is a full
+> dissection — what every tool does, how it works, the exact command that
+> runs it, and the failure modes that are silent. It is written so someone
+> who has never built one of these could rebuild it.
+
+**Research use only. Not a validated diagnostic system.** See
+[Read before clinical use](#read-before-clinical-use).
+
 Nothing here is patient data. This bundle is code, configuration and
 documentation only.
 

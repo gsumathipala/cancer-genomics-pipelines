@@ -630,6 +630,7 @@ def main():
     }
 
     results = {}
+    failed_samples = []
     for name in sorted(samples):
         reads = samples[name]
         record = {"sample": name}
@@ -715,11 +716,25 @@ def main():
                 extra_args=(shlex.split(args.arriba_extra_args)
                             if args.arriba_extra_args else None))
             if not ok:
-                print(f"[FATAL] fusion calling failed for {name}.")
-                return 1
-            record["fusions_tsv"] = fusions_tsv
-            record["discarded_tsv"] = discarded
-            manifest["steps_completed"].append(f"fusions:{name}")
+                # NOT a return. The library QC step below is what explains
+                # WHY the caller failed, and aborting here skipped it --
+                # so the operator got a bare FATAL at the exact moment the
+                # diagnostic mattered most.
+                #
+                # Arriba exits non-zero for DATA conditions as well as
+                # crashes: "no normal reads found" is a statement about the
+                # library, not a bug. That is precisely the case where the
+                # adequacy report is the answer.
+                print(f"[ERROR] fusion calling failed for {name}. "
+                      f"Continuing to the library QC step, which is what "
+                      f"says whether the library could have supported a "
+                      f"result at all; the run will still exit non-zero.")
+                record["fusion_calling_failed"] = True
+                failed_samples.append(name)
+            else:
+                record["fusions_tsv"] = fusions_tsv
+                record["discarded_tsv"] = discarded
+                manifest["steps_completed"].append(f"fusions:{name}")
 
         # ---- STEP 5: RNA LIBRARY QC ----
         banner(5, "RNA library QC (is a negative interpretable?)")
@@ -757,6 +772,10 @@ def main():
         banner(6, "Fusion report")
         if "report" in skip:
             print("[SKIP] Fusion report skipped.")
+        elif record.get("fusion_calling_failed"):
+            print("[SKIP] No fusion report: the caller failed, so there is "
+                  "no table to rank. The library QC report above is the "
+                  "thing to read.")
         elif not record.get("fusions_tsv") and not args.dry_run:
             print("[SKIP] No fusion table to report on.")
         else:
@@ -839,6 +858,18 @@ def main():
         print(f"Manifest: {path}")
     print("\nA negative fusion result is only as good as the library it "
           "came from. Read the RNA QC report before reporting one.")
+
+    if failed_samples:
+        # Exit non-zero: this run did not do what it was asked to. But it
+        # has produced the alignment and the library assessment, which is
+        # what an operator needs to tell an unusable library from a broken
+        # configuration.
+        print(f"\n[ERROR] fusion calling failed for: "
+              f"{', '.join(failed_samples)}. The library QC report for each "
+              f"is the first thing to read -- 'no normal reads found' and "
+              f"similar caller errors are statements about the library, not "
+              f"bugs.")
+        return 1
     return 0
 
 
