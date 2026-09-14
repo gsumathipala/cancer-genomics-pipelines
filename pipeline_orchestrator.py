@@ -3,8 +3,12 @@
 """
 pipeline_orchestrator.py
 ========================
-Orchestrator that chains the three stages of the Cancer Genomics Pipelines
-into a single command:
+Orchestrator that chains the Cancer Genomics Pipelines into a single
+command. How many stages that is depends on --assay: three for DNA, two for
+RNA, because the RNA engine does its own splice-aware alignment and stage 2
+cannot align RNA at all.
+
+DNA (--assay dna, the default):
 
     STAGE 1: fastq_qc_clean.py
              QC + adapter/poly-G trimming -> cleaned FASTQs + QC manifest.
@@ -20,6 +24,16 @@ into a single command:
              When a QC manifest is passed via --manifest, the "qc" step is
              auto-skipped and the cleaned reads from STAGE 1 are reused
              (no redundant re-QC).
+
+RNA (--assay rna):
+
+    STAGE 1: fastq_qc_clean.py -- the same stage, shared.
+    STAGE 2: SKIPPED, and forced so. bwa-mem2 cannot align across an
+             exon-exon junction; it would discard exactly the reads a
+             fusion is evidenced by, silently.
+    STAGE 3: fusion_calling.py
+             STAR (splice-aware, chimeric detection on) -> Arriba ->
+             library QC -> fusion report.
 
 THE HANDOFF MECHANISM
 ---------------------

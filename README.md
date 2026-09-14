@@ -281,7 +281,7 @@ environment.yml                   the analysis environment definition
 comprehensive_variant_calling.py  the engine — all 14 steps, self-contained
 align_reads.py                    stage 2 standalone
 fastq_qc_clean.py                 stage 1 standalone
-pipeline_orchestrator.py          chains the three stages
+pipeline_orchestrator.py          chains the stages; --assay picks DNA or RNA
 pcgr_report.py                    clinical report wrapper
 coverage_report.py                target coverage: which regions a negative
                                   result is actually entitled to speak for

@@ -1577,7 +1577,7 @@ def apply_profile(args, profile, explicit, only=None, rename=None):
         if not hasattr(args, dest):
             # The profile carries a setting this particular script does not
             # implement. Silence is right here: the same profile is handed
-            # to three stages on purpose.
+            # to every stage on purpose.
             continue
 
         if key == "skip_steps":

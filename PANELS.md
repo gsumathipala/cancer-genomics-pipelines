@@ -295,7 +295,7 @@ setting is applied, so you can see both the flag and the key you would edit:
 `align_reads.py` has no `--panel`, because nothing in alignment depends on the
 kit. Stage 2 is the one stage a profile has nothing to say about.
 
-## Chaining all three stages
+## Chaining the stages
 
 Stage 1 (`fastq_qc_clean.py`) and stage 3 both understand `--panel`, and
 both must be given the same one — a chain whose QC extracted a UMI and
