@@ -142,8 +142,8 @@ remember to link two runs after the fact. Profiles name their partner, so
 choosing one half offers the other.
 
 For a sequencing run carrying several specimens there is a **multi-sample
-worksheet**: one row per specimen, each with its own patient details and
-its own assay, queued to run one after another. Point it at the run's FASTQ
+worksheet**: one row per specimen, each with its own patient details,
+its own assay and its own tumour site, queued to run one after another. Point it at the run's FASTQ
 folder and it fills itself in. Unlike the old batch tick-box — which gave
 every sample a single shared patient record — each row is a distinct
 person, reported separately.

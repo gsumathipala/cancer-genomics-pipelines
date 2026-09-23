@@ -865,6 +865,7 @@ def _submit_via(handler, form_values, patient, validate_only=False):
 # Per-row fields that are NOT patient details. Everything in PATIENT_FIELDS
 # is also per row; see worksheet_row_fields().
 WORKSHEET_RUN_FIELDS = ("include", "sample", "assay", "panel",
+                        "pcgr_tumour_site",
                         "r1", "r2", "rna_r1", "rna_r2")
 
 # The columns shown inline in the grid. The rest of the patient fields are
@@ -930,6 +931,19 @@ def worksheet_row_to_form(row, shared):
 
     if row.get("panel"):
         values["panel"] = row["panel"]
+
+    # Tumour site is per row, falling back to the worksheet header.
+    #
+    # It belongs per row for the same reason the patient does: a batch is
+    # several different people, and PCGR tiers actionability AGAINST THE
+    # SITE -- the same variant can be predictive in one tissue and merely
+    # oncogenic in another. A shared site would quietly tier every sample
+    # in the batch as though it came from the same organ.
+    #
+    # The header value remains useful: a worksheet is often one tumour
+    # type, and setting it once beats setting it twelve times.
+    if row.get("pcgr_tumour_site"):
+        values["pcgr_tumour_site"] = row["pcgr_tumour_site"]
 
     # The submit handlers require an input directory even when the FASTQs
     # are named explicitly -- it is how they resolve a bare filename. A
@@ -1104,6 +1118,20 @@ def submit_worksheet():
         if row.get("assay") not in ("dna", "rna", "hybrid"):
             errors.append(f"Row {row['_index'] + 1} ({name}): choose an "
                           f"assay.")
+
+        # Checked here as well as in the single-sample handlers, so the
+        # message names the ROW. On a twelve-row worksheet "tumour site
+        # must be one of PCGR's codes" without a row number is a hunt.
+        site = row.get("pcgr_tumour_site")
+        if site:
+            try:
+                if int(site) not in TUMOUR_SITE_CODES:
+                    raise ValueError
+            except (TypeError, ValueError):
+                errors.append(
+                    f"Row {row['_index'] + 1} ({name}): tumour site "
+                    f"{site!r} is not one of PCGR's codes 0-"
+                    f"{max(TUMOUR_SITE_CODES)}.")
         if not row.get("patient_id") and not row.get("specimen_id") \
                 and not shared.get("patient_id") \
                 and not shared.get("specimen_id"):

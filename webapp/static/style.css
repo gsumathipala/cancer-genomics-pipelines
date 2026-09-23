@@ -264,3 +264,8 @@ button.linkish {
   max-height: 340px; overflow: auto; border: 1px solid var(--line);
   border-radius: 6px; padding: 10px; margin-top: 8px; background: #fff;
 }
+
+/* The tumour-site column carries 31 options; keep it narrow enough that
+   the grid still scans as a grid, and let the browser truncate the label
+   rather than widening every row. */
+table.sheet select.sitesel { max-width: 130px; }

@@ -89,9 +89,12 @@
         <input name="threads" type="number" min="1"
                value="{{ (form or {}).get('threads','8') }}"></label>
     </div>
-    <p class="hint">Clinician and specimen type fill in any row that leaves
-      them blank &mdash; they are usually the same across a worksheet, and
-      typing them twelve times invites typos. Resources left blank
+    <p class="hint">Tumour site, clinician and specimen type fill in any row
+      that leaves them blank &mdash; a worksheet is often one tumour type,
+      and setting it once beats setting it twelve times. <strong>Any row
+      can override the site</strong>, which matters because PCGR tiers
+      actionability against it: the same variant can be predictive in one
+      tissue and merely oncogenic in another. Resources left blank
       (COSMIC, dbSNP, gnomAD, the PCGR bundle) are filled from what is
       installed, exactly as on the single-sample forms.</p>
   </section>
@@ -111,6 +114,7 @@
             <th>Patient / MRN</th>
             <th>Specimen ID</th>
             <th>Diagnosis</th>
+            <th title="Drives PCGR's actionability tiering for this sample">Tumour site</th>
             <th>Read 1</th>
             <th>Read 2</th>
             <th title="Only used by hybrid rows">RNA Read 1</th>
@@ -137,6 +141,20 @@
             <td><input name="row-{{ i }}-patient_id" value="{{ row.get('patient_id','') }}" size="10"></td>
             <td><input name="row-{{ i }}-specimen_id" value="{{ row.get('specimen_id','') }}" size="10"></td>
             <td><input name="row-{{ i }}-diagnosis" value="{{ row.get('diagnosis','') }}" size="14"></td>
+            <td>
+              {#- Blank means "use the header's site". Spelled out rather
+                  than preselecting the header value, so a row that was
+                  never considered is visibly different from one that was
+                  deliberately set to the same site. -#}
+              <select name="row-{{ i }}-pcgr_tumour_site" class="sitesel">
+                <option value="">— as above —</option>
+                {% for code, label in (tumour_sites or []) %}
+                  <option value="{{ code }}"
+                    {% if row.get('pcgr_tumour_site')|string == code|string %}selected{% endif %}>
+                    {{ label }}</option>
+                {% endfor %}
+              </select>
+            </td>
             <td><input name="row-{{ i }}-r1" value="{{ row.get('r1','') }}" size="26"></td>
             <td><input name="row-{{ i }}-r2" value="{{ row.get('r2','') }}" size="26"></td>
             <td><input name="row-{{ i }}-rna_r1" value="{{ row.get('rna_r1','') }}" size="20"></td>
@@ -145,7 +163,7 @@
                         data-row="{{ i }}">more</button></td>
           </tr>
           <tr class="morerow" id="more-{{ i }}" hidden>
-            <td colspan="11">
+            <td colspan="12">
               <div class="fields">
                 {% for key, label in patient_fields %}
                   {% if key not in inline_patient %}
