@@ -1241,7 +1241,7 @@ What *is* ours is every decision between those tools — which settings a
 panel profile applies, which file the report step picks up, which flags
 the web interface emits, what a fusion table says about a result. All of
 that is ordinary code, and all of it is testable in seconds. The suite in
-`tests/` runs 127 such checks in about twenty seconds, invokes no aligner,
+`tests/` runs 128 such checks in about twenty seconds, invokes no aligner,
 and uses only the standard library so it can be run before an environment
 exists. See [TESTING.md](TESTING.md).
 

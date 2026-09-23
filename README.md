@@ -350,7 +350,7 @@ run_tests.py                      the test suite runner — stdlib only,
 docs/pipeline_overview.svg        the illustration at the top of this file
 docs/make_diagram.py              which generates it from the engines' own
                                   step banners; --check reports drift
-tests/                            125 tests: panel configuration, report
+tests/                            128 tests: panel configuration, report
                                   logic, web routes, command construction,
                                   one per bug that reached this code
 cancer-genomics-pipelines.1             man page
@@ -425,7 +425,7 @@ the manifest travels with the code, so it describes what is actually there.
 python3 run_tests.py
 ```
 
-125 tests, about twenty seconds, nothing to install — the suite uses the
+128 tests, about twenty seconds, nothing to install — the suite uses the
 standard library only, like the analysis scripts. It runs no aligner or
 caller; it tests what this bundle decides, which is the part that is
 actually ours. See [TESTING.md](TESTING.md), particularly on why the

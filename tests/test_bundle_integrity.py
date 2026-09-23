@@ -225,3 +225,47 @@ class TestTheDiagramAgreesWithTheCode(unittest.TestCase):
                 # A zero-byte image still renders as a broken link, which
                 # is exactly the kind of thing nobody checks after a merge.
                 self.assertGreater(os.path.getsize(path), 10_000)
+
+
+class TestDocumentedTestCountIsTrue(unittest.TestCase):
+    """
+    The number of tests quoted in the documentation is the real number.
+
+    A quoted count is the definition of a fact that rots: it is written
+    once, it is never wrong at the time, and every subsequent commit makes
+    it slightly less true. It had already drifted twice (123, then 125,
+    against an actual 127) before this test existed. Counting at runtime
+    means the documentation can only be wrong if this fails.
+    """
+
+    def setUp(self):
+        loader = unittest.TestLoader()
+        tests_dir = os.path.join(ROOT, "tests")
+        suite = loader.discover(tests_dir, pattern="test_*.py",
+                                top_level_dir=tests_dir)
+        self.actual = suite.countTestCases()
+
+    def test_every_quoted_count_matches(self):
+        # Deliberately matches "N tests" and "N checks" wherever they
+        # appear, rather than at a fixed line, so a new mention anywhere in
+        # the documentation is covered the moment it is written.
+        # One optional word may sit between the number and the noun
+        # ("127 such checks"), because that phrasing slipped past a
+        # stricter pattern the first time this test was written.
+        pattern = re.compile(r"\b(\d{2,4}) (?:[a-z]+ )?(?:tests|checks)\b")
+        checked = 0
+        for name in ("README.md", "TESTING.md", "install.md",
+                     "cancer-genomics-pipelines.1", "PIPELINE_ANATOMY.md"):
+            path = os.path.join(ROOT, name)
+            if not os.path.exists(path):
+                continue
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            for quoted in pattern.findall(text):
+                checked += 1
+                with self.subTest(doc=name, quoted=quoted):
+                    self.assertEqual(
+                        int(quoted), self.actual,
+                        f"{name} says {quoted}, the suite has "
+                        f"{self.actual}")
+        self.assertGreater(checked, 0, "no quoted count found to check")

@@ -507,7 +507,11 @@ is a no-op, and:
   over the top — indistinguishable from here). Each one is named as it is
   replaced, or left alone under `--keep-local`;
 - `SHA256SUMS` travels with the code, so the updated installation still passes
-  its own `sha256sum -c SHA256SUMS`.
+  its own `sha256sum -c SHA256SUMS`;
+- the **test suite travels with it too**, because `SHA256SUMS` is also the
+  installer's file list. After an update, `python3 run_tests.py` inside the
+  installation confirms the code that just landed is coherent — which is
+  worth doing, since an interrupted copy is otherwise silent.
 
 Restart the web interface afterwards. A run already in progress keeps using the
 code it started with, which is why an update mid-run does not disturb it.
@@ -767,7 +771,7 @@ refreshed.
 python3 run_tests.py
 ```
 
-127 checks, about twenty seconds, nothing to install — the suite uses only
+128 checks, about twenty seconds, nothing to install — the suite uses only
 the Python standard library, so it runs before the conda environments
 exist. Tests needing Flask skip themselves and announce the skip rather
 than failing.

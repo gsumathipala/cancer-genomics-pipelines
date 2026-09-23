@@ -17,5 +17,15 @@
 # PDF generation deliberately adds no dependency: webapp/pdfwriter.py emits
 # PDF directly using the standard-14 fonts, so reportlab, WeasyPrint and
 # wkhtmltopdf are all unnecessary.
+#
+# The TEST SUITE adds nothing either: run_tests.py and everything under
+# tests/ use the standard library's unittest, so the suite runs on a fresh
+# clone before any environment exists. Tests that exercise the web
+# interface skip themselves when Flask is absent.
+#
+# ONE development-only exception: docs/make_diagram.py renders the PNG of
+# the pipeline illustration with Pillow. It is never needed to RUN an
+# analysis -- only to redraw the picture in the README -- so it is
+# deliberately not listed as a requirement below.
 
 flask>=2.2
