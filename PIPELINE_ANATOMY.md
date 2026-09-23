@@ -541,7 +541,7 @@ knowledge-base lookup on that string would find. The clinical numbering is
 in the annotated VCF too, further along the list; and the PCGR report,
 which annotates with VEP against the MANE transcript, says `p.Val600Glu`.
 So: **take protein nomenclature from the PCGR report, never from the first
-`ANN` entry.** Nothing in this pipeline reads `ANN` for that reason.
+`ANN` entry** ([L-06](KNOWN_LIMITATIONS.md)). Nothing in this pipeline reads `ANN` for that reason.
 Choosing MANE in SnpEff itself needs `-canonList` and a MANE transcript
 list, which the installer does not fetch; plain `-canon` picks the longest
 CDS, which for BRAF is exactly the wrong one.
@@ -729,6 +729,9 @@ cannot.
 > supplementary alignments, flag `0x800` — verified against that real BAM,
 > and still stops at the first one so the healthy case costs almost
 > nothing.
+>
+> The failure it guards against has still not been observed in practice
+> ([L-20](KNOWN_LIMITATIONS.md)).
 >
 > **Test a detector on a known positive before you trust its negatives.**
 > A guard that fires on correct results is worse than none: it teaches
@@ -1265,7 +1268,7 @@ What *is* ours is every decision between those tools — which settings a
 panel profile applies, which file the report step picks up, which flags
 the web interface emits, what a fusion table says about a result. All of
 that is ordinary code, and all of it is testable in seconds. The suite in
-`tests/` runs 168 such checks in about twenty seconds, invokes no aligner,
+`tests/` runs 170 such checks in about twenty seconds, invokes no aligner,
 and uses only the standard library so it can be run before an environment
 exists. See [TESTING.md](TESTING.md).
 
@@ -1355,8 +1358,11 @@ position.
 
 ## 13. The honest ending
 
-This pipeline is validated on **one sample, one assay, tumour-only**. The
-RNA branch has no validation at all. Every report it produces says so.
+Every pathway has been run end to end on **simulated** reads with a known
+answer, and finds exactly what was planted. None of it has been validated on
+real specimens, and no call has been orthogonally confirmed. Every report it
+produces says so, and every known gap is listed, by ID, in
+[KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 
 That is not modesty, it is the same principle as everything else here:
 **the system must not claim more than it has earned**, because the person

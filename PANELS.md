@@ -1,6 +1,11 @@
 <!-- Created by Brainstorm, 2026. -->
 # Panels — running more than one assay
 
+> A profile is a set of sensible defaults, **never a validation**: every
+> threshold here was tuned on Illumina paired-end capture data, and no
+> amplicon, Ion Torrent or single-end run has been made
+> ([L-03](KNOWN_LIMITATIONS.md)).
+
 This pipeline was written against one panel. Everything that panel needed
 is a separate flag with a general-purpose default, which is fine until the
 laboratory runs a second kit — at which point the operator has to know,

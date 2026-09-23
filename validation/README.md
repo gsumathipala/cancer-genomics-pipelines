@@ -4,7 +4,9 @@
 
 **Research use only.** Passing this proves the pipeline finds what was
 planted in *simulated* reads. It is not a clinical validation: that needs
-real specimens with orthogonally confirmed results.
+real specimens with orthogonally confirmed results. What this does and does
+not prove is set out in [KNOWN_LIMITATIONS.md](../KNOWN_LIMITATIONS.md),
+L-01 to L-05.
 
 The unit tests (`run_tests.py`) check what this bundle decides. This checks
 the whole thing — every tool, every handoff, every report — by running it on

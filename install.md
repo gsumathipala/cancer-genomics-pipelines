@@ -511,7 +511,11 @@ is a no-op, and:
 - the **test suite travels with it too**, because `SHA256SUMS` is also the
   installer's file list. After an update, `python3 run_tests.py` inside the
   installation confirms the code that just landed is coherent — which is
-  worth doing, since an interrupted copy is otherwise silent.
+  worth doing, since an interrupted copy is otherwise silent;
+- the **STAR index is not rebuilt** when an update moves the default
+  GENCODE release on — that costs an hour and ~32 GB of RAM, so it stays a
+  deliberate step. `--check` reports the mismatch
+  ([L-16](KNOWN_LIMITATIONS.md)).
 
 Restart the web interface afterwards. A run already in progress keeps using the
 code it started with, which is why an update mid-run does not disturb it.
@@ -771,7 +775,7 @@ refreshed.
 python3 run_tests.py
 ```
 
-168 checks, about twenty seconds, nothing to install — the suite uses only
+170 checks, about twenty seconds, nothing to install — the suite uses only
 the Python standard library, so it runs before the conda environments
 exist. Tests needing Flask skip themselves and announce the skip rather
 than failing.

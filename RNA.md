@@ -38,6 +38,13 @@ behind by an interrupted build is skipped rather than selected and then
 rejected a moment later, which reads as a contradiction instead of as
 "that index is unfinished".
 
+**The index outlives the annotation it was built from.** When the
+installer's default GENCODE release moves on, the new GTF is downloaded but
+the index is not rebuilt; runs stay consistent because the web form offers
+the index's own annotation, and `install_pipeline.py --check` names the
+mismatch ([L-16](KNOWN_LIMITATIONS.md)). Rebuilding is a deliberate step:
+`--only star-index --force`.
+
 **Match `--rna-read-length` to your instrument.** The read length is baked
 into the index (STAR's `--sjdbOverhang`), an index built for 100 bp reads
 works on 150 bp reads, and what it loses is junction sensitivity — silently.
@@ -164,6 +171,7 @@ It used to leave the two checks out altogether and then say "every measured
 check cleared its bar — an empty fusion table is a negative result" — for a
 library of any depth. A real run of 0.6 million reads was certified exactly
 so. **Choose an RNA panel profile** for the floors to apply.
+([L-13](KNOWN_LIMITATIONS.md))
 
 **Record the DV200.** The web form has a field for it. It is the best single
 predictor of whether fusion detection could have worked, and no amount of
@@ -239,6 +247,7 @@ Two behaviours worth knowing:
   normally, so this is how this PCGR version treats fusions, not a wiring
   fault. Read a fusion's tier as a floor, and interpret canonical driver
   fusions against current guidelines, not against PCGR's tier alone.
+  ([L-07](KNOWN_LIMITATIONS.md))
 
 ### The PDF
 

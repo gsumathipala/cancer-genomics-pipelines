@@ -1,7 +1,7 @@
 <!-- Created by Brainstorm, 2026. -->
 # Somatic copy number: scope for when normals exist
 
-Status: **not implemented.** This is the design to build against, written
+Status: **not implemented** ([L-21](KNOWN_LIMITATIONS.md)). This is the design to build against, written
 2026-09-08 so the decisions are settled before anyone starts.
 
 The blocker is data, not software. Every tool needed is either already

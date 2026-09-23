@@ -272,3 +272,43 @@ class TestDocumentedTestCountIsTrue(unittest.TestCase):
                         f"{name} says {quoted}, the suite has "
                         f"{self.actual}")
         self.assertGreater(checked, 0, "no quoted count found to check")
+
+
+class TestLimitationIdsResolve(unittest.TestCase):
+    """
+    Every "L-NN" cited in the documentation names a real register entry.
+
+    KNOWN_LIMITATIONS.md gives each gap a stable ID so other documents can
+    point at the exact entry. A citation to an ID that was renumbered or
+    removed would send a reader looking for a warning that is not there --
+    the one place where a dangling reference does real harm.
+    """
+
+    DOCS = ("README.md", "RNA.md", "PIPELINE_ANATOMY.md", "install.md",
+            "PANELS.md", "CNV_SCOPE.md", "TESTING.md",
+            "cancer-genomics-pipelines.1",
+            os.path.join("validation", "README.md"))
+
+    def setUp(self):
+        with open(os.path.join(ROOT, "KNOWN_LIMITATIONS.md"),
+                  encoding="utf-8") as fh:
+            self.register = fh.read()
+        self.defined = re.findall(r"^### (L-\d{2}) ", self.register,
+                                  re.MULTILINE)
+
+    def test_register_ids_are_unique_and_consecutive(self):
+        self.assertEqual(len(self.defined), len(set(self.defined)))
+        numbers = [int(i[2:]) for i in self.defined]
+        self.assertEqual(numbers, list(range(1, len(numbers) + 1)))
+
+    def test_every_cited_id_exists(self):
+        known = set(self.defined)
+        for name in self.DOCS:
+            with open(os.path.join(ROOT, name), encoding="utf-8") as fh:
+                # The man page escapes the hyphen as "L\-07".
+                text = fh.read().replace("L\\-", "L-")
+            for cited in sorted(set(re.findall(r"\bL-\d{2}\b", text))):
+                with self.subTest(doc=name, id=cited):
+                    self.assertIn(cited, known,
+                                  f"{name} cites {cited}, which the "
+                                  f"register does not define")

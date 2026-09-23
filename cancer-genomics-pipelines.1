@@ -1482,7 +1482,7 @@ warns that each lane is being processed as a separate sample.
 .SH TESTING
 .PP
 .B python3 run_tests.py
-runs the bundle's own test suite: 168 checks, about twenty seconds,
+runs the bundle's own test suite: 170 checks, about twenty seconds,
 nothing to install. It uses only the Python standard library, so it can be
 run before the analysis environment has been built. Tests that need Flask
 skip themselves and say so.
@@ -1703,19 +1703,38 @@ which removes them by mechanism and costs no SNVs, rather than
 .BR \-\-min\-allele\-fraction ,
 which is type\-blind and pays for indel cleanup with SNV sensitivity.
 .TP
+.B The full register is KNOWN_LIMITATIONS.md
+Every known gap, unproven claim and misleading tool behaviour is listed there
+with a stable ID (L\-01, L\-02, \&...). The entries below cite them.
+.TP
+.B The command line skips steps it has no resources for
+Unlike the web interface, the engine does not find installed resources by
+itself. Without
+.BR \-\-dbsnp / \-\-known\-indels ,
+.BR \-\-contamination\-resource ,
+.BR \-\-msi\-models ,
+.B \-\-cosmic
+and
+.BR \-\-pcgr\-refdata\-dir ,
+BQSR, contamination, MSI, COSMIC and PCGR are skipped with a
+.B [SKIP]
+line each, and the run still exits 0. Read the
+.B [SKIP]
+lines of every run (L\-09).
+.TP
 .B Take protein changes from the PCGR report, not from SnpEff's first entry
 SnpEff lists every overlapping transcript, ordered by effect severity, so
 its first
 .B ANN
 entry can be a non\-clinical isoform: a known BRAF V600E was first
 annotated as p.Val640Glu. The PCGR report annotates against MANE and says
-p.Val600Glu.
+p.Val600Glu (L\-06).
 .TP
 .B PCGR 2.3.2 tiers fusions without a site match
 With the tumour site set to lung, a known EML4::ALK was assigned tier 2,
 with no primary\-site match recorded, while the SNVs in the same report were
 site\-matched to tier 1. Treat a fusion's tier as a floor and interpret
-canonical driver fusions against current guidelines.
+canonical driver fusions against current guidelines (L\-07).
 .TP
 .B COSMIC and reference builds must match
 COSMIC VCFs are build\-specific. Annotating hg38 calls with an hg19 COSMIC file
@@ -1757,7 +1776,9 @@ set rather than the SnpEff output.
 .BR bcftools (1),
 .BR multiqc (1)
 .PP
-In this bundle: PIPELINE_ANATOMY.md (a full dissection of every tool and
+In this bundle: KNOWN_LIMITATIONS.md (every known gap, by ID \(em read it
+first), validation/ (known\-answer runs and their grader),
+PIPELINE_ANATOMY.md (a full dissection of every tool and
 stage, written so the pipeline could be rebuilt from it),
 docs/pipeline_overview.svg (the same thing as one illustration, with PCGR
 decomposed), PANELS.md (panel profiles), RNA.md (the RNA branch),

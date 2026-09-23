@@ -124,6 +124,9 @@ was planted. Every pathway — web, command line, orchestrator, hybrid and
 worksheet, DNA and RNA — was run through it on 23 September 2026 and
 passed, and running it is how most of the defects above were found.
 
+What it does **not** prove — real specimens, other chemistries, GRCh37 —
+is listed in [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) (L-01 to L-05).
+
 Run it after anything that changes a tool version, a reference, or a step.
 It takes about an hour of machine time for every pathway and needs the
 installed reference data, which is why it is not part of `run_tests.py`.

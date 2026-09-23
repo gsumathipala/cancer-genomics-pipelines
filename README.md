@@ -9,7 +9,9 @@
 > Clinical deployment would need a validation set, orthogonal confirmation
 > and a matched normal. Read
 > **[Read before clinical use](#read-before-clinical-use)** before you do
-> anything else — it lists, specifically, what is not established.
+> anything else — it lists, specifically, what is not established — and
+> **[KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)**, the full register of
+> known gaps.
 
 Somatic variant and fusion calling for Illumina cancer panels. Two branches
 off one shared QC stage: **DNA** for SNVs and indels (GATK/Mutect2), and
@@ -148,7 +150,9 @@ Everything else installs without an account.
 ```bash
 conda activate cancer_pipeline
 
-# Command line
+# Command line -- pass the resources explicitly: without them BQSR,
+# contamination, MSI, COSMIC and PCGR are SKIPPED and the run still exits 0
+# (KNOWN_LIMITATIONS.md, L-09). The web interface fills them in.
 python comprehensive_variant_calling.py --help
 
 # Web interface — no conda activation needed, it switches environments itself
@@ -347,13 +351,14 @@ panel_profiles.py                 panel profiles: one name configures a run
                                   for its kit's chemistry
 run_tests.py                      the test suite runner — stdlib only,
                                   nothing to install
+KNOWN_LIMITATIONS.md              every known gap, by ID -- read it first
 validation/                       known-answer runs: planted mutations and
                                   fusions in simulated reads, and a grader
                                   that passes a run only if it finds them
 docs/pipeline_overview.svg        the illustration at the top of this file
 docs/make_diagram.py              which generates it from the engines' own
                                   step banners; --check reports drift
-tests/                            168 tests: panel configuration, report
+tests/                            170 tests: panel configuration, report
                                   logic, web routes, command construction,
                                   one per bug that reached this code
 cancer-genomics-pipelines.1             man page
@@ -428,7 +433,7 @@ the manifest travels with the code, so it describes what is actually there.
 python3 run_tests.py
 ```
 
-168 tests, about twenty seconds, nothing to install — the suite uses the
+170 tests, about twenty seconds, nothing to install — the suite uses the
 standard library only, like the analysis scripts. It runs no aligner or
 caller; it tests what this bundle decides, which is the part that is
 actually ours. See [TESTING.md](TESTING.md), particularly on why the
@@ -445,16 +450,24 @@ hg38, and grades what each run finds. Every pathway passed on 23 September
 
 ## Read before clinical use
 
-This pipeline has been validated on **one sample, one assay, tumour-only**.
-Specifically not yet established:
+> **The full register of known limitations is
+> [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)** — every gap, unproven claim
+> and misleading tool behaviour in one place, each with a stable ID (L-01,
+> L-02, …) that the other documents point to.
+
+Every pathway has been run end to end on **simulated** reads with a known
+answer, and finds exactly what was planted (see [validation/](validation/README.md)).
+It has not been validated on real specimens. Specifically not yet
+established:
 
 - **No orthogonal confirmation.** No call produced by this pipeline has been
   checked against an independent method.
-- **The tumour–normal path has never processed real data.** It exists and is
-  exercised by the dry-run tests, but that is not the same thing.
-- **The RNA branch has never been validated at all.** It is newer than
-  everything above and has no truth set: no fusion call it produces has been
-  checked against FISH, RT-PCR or a second caller. For anchored-PCR panels
+- **Nothing has been validated on real specimens** (L-01). The tumour–normal
+  path and the RNA branch have both been run end to end, but only on
+  simulated reads, which carry none of real FFPE material's damage, bias or
+  noise.
+- **The RNA branch has no real-specimen truth set.** No fusion call it
+  produces has been checked against FISH, RT-PCR or a second caller. For anchored-PCR panels
   (Archer, Oncomine) the vendor's own caller is the validated route, and
   results here are orthogonal evidence rather than a replacement. See
   [RNA_SCOPE.md](RNA_SCOPE.md).
@@ -482,7 +495,15 @@ Specifically not yet established:
 - **No tumour purity or HRD scoring**, so variant allele fractions are
   uncorrected and clonality is not claimed.
 - **Tumour-only TMB is unreliable** — PCGR says so itself — and should not be
-  reported without a matched normal.
+  reported without a matched normal. Tumour-only calling also cannot remove
+  a novel germline variant (L-17): expect it at VAF ~0.5.
+- **Take protein changes from the PCGR report**, not from SnpEff's first
+  annotation, which named a known BRAF V600E as `p.Val640Glu` (L-06).
+- **PCGR 2.3.2 under-tiers fusions**: EML4::ALK in a lung specimen came out
+  tier 2 (L-07). Treat a fusion's tier as a floor.
+- **The command line skips steps silently** when resources are not passed:
+  BQSR, contamination, MSI, COSMIC and PCGR each print `[SKIP]` and the run
+  still exits 0 (L-09). The web interface fills them in.
 - **On FFPE material**, keep step 6's read-orientation model: formalin
   deaminates cytosine, and that step is what separates the resulting C>T/G>A
   damage from biology. Residual damage still reaches PASS at low allele
