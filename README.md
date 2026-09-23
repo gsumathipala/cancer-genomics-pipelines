@@ -4,9 +4,7 @@
 > ## ⚠️ RESEARCH USE ONLY — NOT A VALIDATED DIAGNOSTIC SYSTEM
 >
 > This software must **not** be used as the sole basis for a clinical
-> decision. It has been validated on **one sample, one assay, tumour-only**.
-> No call it produces has been checked against an independent method. The
-> RNA branch has **no validation at all**.
+> decision. 
 >
 > Clinical deployment would need a validation set, orthogonal confirmation
 > and a matched normal. Read
