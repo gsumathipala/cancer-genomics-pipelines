@@ -1470,6 +1470,32 @@ was not given,
 .B fastq_qc_clean.py
 warns that each lane is being processed as a separate sample.
 .
+.SH TESTING
+.PP
+.B python3 run_tests.py
+runs the bundle's own test suite: 127 checks, about twenty seconds,
+nothing to install. It uses only the Python standard library, so it can be
+run before the analysis environment has been built. Tests that need Flask
+skip themselves and say so.
+.PP
+No aligner, caller or annotator is invoked. What is checked is what this
+bundle decides \(em which settings a panel profile applies, which file the
+report step selects, which flags the web interface emits, what a fusion
+table says about a result \(em together with one named regression test per
+bug that has reached this code. A leaked file handle fails the run.
+.PP
+Pass a module's short name to run one tier, for example
+.BR "python3 run_tests.py regressions" .
+See
+.I TESTING.md
+for what each tier covers.
+.PP
+.B python3 docs/make_diagram.py \-\-check
+verifies that the illustration in
+.I README.md
+still agrees with the step banners the engines print, and reports any
+drift.
+.
 .SH REQUIREMENTS
 Python 3.8 or newer, plus these tools on
 .IR PATH :
@@ -1709,9 +1735,12 @@ set rather than the SnpEff output.
 .BR bcftools (1),
 .BR multiqc (1)
 .PP
-In this bundle: PANELS.md (panel profiles), RNA.md (the RNA branch),
-RNA_SCOPE.md and CNV_SCOPE.md (what is deliberately not built),
-DATABASE_SETUP.md, install.md.
+In this bundle: PIPELINE_ANATOMY.md (a full dissection of every tool and
+stage, written so the pipeline could be rebuilt from it),
+docs/pipeline_overview.svg (the same thing as one illustration, with PCGR
+decomposed), PANELS.md (panel profiles), RNA.md (the RNA branch),
+TESTING.md (the test suite), RNA_SCOPE.md and CNV_SCOPE.md (what is
+deliberately not built), DATABASE_SETUP.md, install.md.
 .PP
 GATK documentation:
 .UR https://gatk.broadinstitute.org

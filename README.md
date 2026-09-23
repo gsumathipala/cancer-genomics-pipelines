@@ -347,6 +347,9 @@ panel_profiles.py                 panel profiles: one name configures a run
                                   for its kit's chemistry
 run_tests.py                      the test suite runner — stdlib only,
                                   nothing to install
+docs/pipeline_overview.svg        the illustration at the top of this file
+docs/make_diagram.py              which generates it from the engines' own
+                                  step banners; --check reports drift
 tests/                            125 tests: panel configuration, report
                                   logic, web routes, command construction,
                                   one per bug that reached this code

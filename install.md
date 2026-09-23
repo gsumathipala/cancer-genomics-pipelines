@@ -747,6 +747,40 @@ COSMIC is reported as **manual**: downloads need a registered account, so no
 unattended check is honest. The installed version is shown beside the
 release-notes link.
 
+## 7d. Check the install before you trust it
+
+Two checks, both fast, both worth doing before the first real specimen.
+
+**Did the bundle arrive intact?**
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
+The manifest travels with the code and describes what should be there, so
+this works on a fresh copy and equally on a machine `--update` has just
+refreshed.
+
+**Does the code still do what it says?**
+
+```bash
+python3 run_tests.py
+```
+
+127 checks, about twenty seconds, nothing to install — the suite uses only
+the Python standard library, so it runs before the conda environments
+exist. Tests needing Flask skip themselves and announce the skip rather
+than failing.
+
+It invokes no aligner or caller, so a green suite is **not** evidence that
+GATK or STAR are correctly installed — `install_pipeline.py --check` is
+what answers that. What it confirms is that the code around them is intact:
+panel profiles resolve, the report step picks the right files, the web
+interface emits flags the scripts accept. A failure here after a transfer
+usually means something did not copy.
+
+See [TESTING.md](TESTING.md) for what each tier covers.
+
 ## 8. Troubleshooting / notes
 
 - **Channel/solver trouble**: prefer `mamba` over `conda` for the big solve:

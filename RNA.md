@@ -33,7 +33,10 @@ It reuses the hg38 FASTA the DNA branch already downloaded — the shared
 If you omit `--read-length` and `--star-index` at run time, the pipeline
 **discovers** the installed index rather than guessing a path: with exactly
 one installed it uses it and says so; with several it names them and asks
-you to be explicit.
+you to be explicit. Only a *complete* index counts — a directory left
+behind by an interrupted build is skipped rather than selected and then
+rejected a moment later, which reads as a contradiction instead of as
+"that index is unfinished".
 
 **Match `--rna-read-length` to your instrument.** The read length is baked
 into the index (STAR's `--sjdbOverhang`), an index built for 100 bp reads
