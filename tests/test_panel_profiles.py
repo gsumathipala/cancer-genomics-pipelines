@@ -12,7 +12,7 @@ import argparse
 import os
 import unittest
 
-from helpers import TempCase, bed, fai
+from helpers import TempCase, bed, fai, read_text
 import panel_profiles as pp
 
 
@@ -202,9 +202,9 @@ class TestContigNaming(TempCase):
     def test_the_original_file_is_never_edited(self):
         ref = self._reference(["chr1"])
         source = self.write("v.bed", bed([("1", 100, 200)]))
-        before = open(source).read()
+        before = read_text(source)
         pp.harmonise_bed_contigs(source, ref, self.path("out/y"))
-        self.assertEqual(open(source).read(), before)
+        self.assertEqual(read_text(source), before)
 
     def test_a_matching_bed_is_left_alone(self):
         ref = self._reference(["chr1"])
@@ -218,7 +218,7 @@ class TestContigNaming(TempCase):
         source = self.write("v.bed", bed([("1", 100, 200), ("MT", 1, 50)]))
         out, note = pp.harmonise_bed_contigs(source, ref, self.path("out/w"))
         self.assertIn("dropped", note)
-        self.assertNotIn("chrM", open(out).read())
+        self.assertNotIn("chrM", read_text(out))
 
     def test_a_bed_for_the_wrong_genome_says_so(self):
         ref = self._reference(["chr1"])

@@ -86,6 +86,11 @@ class TestArtefactAddressing(WebCase):
         job = self.app_module.manager.submit(
             "x.py", ["py", "x.py"], {"patient_id": "P"},
             meta={"output_dir": out}, assay="dna")
+        # The job writes its log and state file on a worker thread, and
+        # those are artefacts too. Counting artefacts while it is still
+        # running counts a moving target -- the cause of an intermittent
+        # "5 != 4" here that had nothing to do with what the test checks.
+        self.drain()
         return job, out
 
     def test_ids_survive_new_files_appearing_mid_run(self):

@@ -318,7 +318,7 @@ panel_profiles.py                 panel profiles: one name configures a run
                                   for its kit's chemistry
 run_tests.py                      the test suite runner — stdlib only,
                                   nothing to install
-tests/                            123 tests: panel configuration, report
+tests/                            125 tests: panel configuration, report
                                   logic, web routes, command construction,
                                   one per bug that reached this code
 cancer-genomics-pipelines.1             man page
@@ -393,7 +393,7 @@ the manifest travels with the code, so it describes what is actually there.
 python3 run_tests.py
 ```
 
-123 tests, about twenty seconds, nothing to install — the suite uses the
+125 tests, about twenty seconds, nothing to install — the suite uses the
 standard library only, like the analysis scripts. It runs no aligner or
 caller; it tests what this bundle decides, which is the part that is
 actually ours. See [TESTING.md](TESTING.md), particularly on why the

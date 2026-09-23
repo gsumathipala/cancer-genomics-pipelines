@@ -189,11 +189,20 @@ class Job:
                          else None),
                     start_new_session=True,
                 )
-                for line in self._proc.stdout:
-                    line = line.rstrip("\n")
-                    log.write(line + "\n")
-                    log.flush()
-                    self._observe(line)
+                # `with` on the pipe, not just the loop. Reading to EOF
+                # does not close the read end -- CPython releases it only
+                # when the Popen object is collected, and this manager
+                # keeps every Job for the life of the server so that
+                # finished runs stay listable. Without this, each
+                # completed run held a file descriptor until the process
+                # exited, and a long-lived server working through a
+                # worksheet ran out of them.
+                with self._proc.stdout as stream:
+                    for line in stream:
+                        line = line.rstrip("\n")
+                        log.write(line + "\n")
+                        log.flush()
+                        self._observe(line)
                 self._proc.wait()
 
             with self._lock:
@@ -305,12 +314,15 @@ class Job:
                 )
                 with self._lock:
                     self._proc = proc          # so cancel() reaches it too
-                for line in proc.stdout:
-                    line = line.rstrip("\n")
-                    log.write(line + "\n")
-                    log.flush()
-                    with self._lock:
-                        self._tail.append(line)
+                # Same reason as the pipeline loop above: close the pipe
+                # here rather than leaving it to the collector.
+                with proc.stdout as stream:
+                    for line in stream:
+                        line = line.rstrip("\n")
+                        log.write(line + "\n")
+                        log.flush()
+                        with self._lock:
+                            self._tail.append(line)
                 proc.wait()
             if proc.returncode == 0:
                 reports = glob.glob(os.path.join(output_dir, "pcgr", "*.html"))

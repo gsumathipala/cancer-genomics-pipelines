@@ -8,6 +8,7 @@ a test suite that needed patient data would be a test suite nobody could
 run on a laptop.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -98,3 +99,20 @@ def star_log(input_reads=1000000, unique_pct=85.0, too_short_pct=5.0,
         f"                     Number of chimeric reads |\t{chimeric}\n"
         "                     Average input read length |\t200\n"
     )
+
+def read_text(path):
+    """
+    Read a whole file and close it.
+
+    open(path).read() is the tempting one-liner and leaks a handle until
+    the collector gets to it. run_tests.py fails the run on a leaked
+    handle, so the suite has to hold itself to the standard it enforces.
+    """
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def read_json(path):
+    """Parse a JSON file and close it -- see read_text()."""
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)

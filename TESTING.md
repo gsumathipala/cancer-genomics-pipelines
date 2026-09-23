@@ -78,6 +78,28 @@ those:
 None of these would have failed a run. All of them would have produced a
 report. That is why they are each pinned by name.
 
+One bug in that module is of a different kind and is marked as such: a
+finished job held its subprocess pipe open. The manager deliberately keeps
+every `Job` for the life of the server so finished runs stay listable, so
+each completed run also kept a file descriptor — a server working through
+a long worksheet accumulated them until it ran out. It reports no wrong
+answer; it degrades a long-lived server, and it is invisible until the
+limit is hit, at which point it presents as something else entirely.
+
+## Leaked file handles fail the run
+
+`run_tests.py` counts `ResourceWarning`s and fails the run on any that
+appear, listing them at the end. They are not turned into errors, because
+a leaked handle is reported whenever the garbage collector happens to
+notice it — usually inside an unrelated test, which would then fail for
+something it did not do.
+
+This is why the suite reads files through `read_text()` and `read_json()`
+in `tests/helpers.py` rather than `open(path).read()`: the tempting
+one-liner leaks a handle, and a suite that enforces a rule has to keep
+it. The check found nine such handles in the tests themselves the first
+time it ran.
+
 ---
 
 ## Adding a test

@@ -12,7 +12,7 @@ import json
 import os
 import unittest
 
-from helpers import TempCase, ARRIBA_HEADER, arriba_row
+from helpers import ARRIBA_HEADER, TempCase, arriba_row, read_json, read_text
 import fusion_report as fr
 
 
@@ -65,7 +65,7 @@ class TestRanking(TempCase):
                        split1=40, split2=38),
             arriba_row("EML4", "ALK", confidence="medium"),
         ])
-        data = json.load(open(result["json"]))
+        data = read_json(result["json"])
         self.assertEqual(data["fusions"][0]["_pair"], "EML4--ALK")
 
     def test_same_gene_splice_event_outranks_a_plain_actionable_fusion(self):
@@ -73,7 +73,7 @@ class TestRanking(TempCase):
             arriba_row("EML4", "ALK", confidence="medium"),
             arriba_row("MET", "MET", confidence="medium"),
         ])
-        data = json.load(open(result["json"]))
+        data = read_json(result["json"])
         self.assertEqual(data["fusions"][0]["_pair"], "MET--MET")
 
     def test_summary_counts_are_consistent(self):
@@ -97,13 +97,13 @@ class TestPcgrHandoff(TempCase):
 
     def test_schema_matches_what_pcgr_requires(self):
         result = self._convert([arriba_row("EML4", "ALK")])
-        header = open(result["pcgr_tsv"]).readline().rstrip("\n").split("\t")
+        header = read_text(result["pcgr_tsv"]).splitlines()[0].split("\t")
         self.assertEqual(header, ["FusionGene", "LeftBreakpoint",
                                   "RightBreakpoint", "SplitReads"])
 
     def test_gene_pair_uses_the_double_dash_separator(self):
         result = self._convert([arriba_row("EML4", "ALK")])
-        body = open(result["pcgr_tsv"]).read().splitlines()[1]
+        body = read_text(result["pcgr_tsv"]).splitlines()[1]
         self.assertTrue(body.split("\t")[0] == "EML4--ALK")
 
     def test_calls_below_the_bar_are_excluded_from_pcgr(self):
@@ -120,7 +120,7 @@ class TestPcgrHandoff(TempCase):
         # past that threshold.
         result = self._convert([arriba_row("EML4", "ALK", split1=6,
                                            split2=5, discordant=99)])
-        row = open(result["pcgr_tsv"]).read().splitlines()[1].split("\t")
+        row = read_text(result["pcgr_tsv"]).splitlines()[1].split("\t")
         self.assertEqual(row[3], "11")
 
     def test_no_qualifying_fusions_writes_no_file(self):

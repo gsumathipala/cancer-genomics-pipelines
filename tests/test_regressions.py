@@ -10,6 +10,7 @@ like a right one costs more than a crash, because nobody goes looking.
 """
 
 import os
+import sys
 import unittest
 
 from helpers import TempCase, have_flask, star_log
@@ -213,6 +214,50 @@ class TestArtefactIdentityIsStable(TempCase):
         self.assertNotEqual(
             artefact_id(os.path.join(self.tmp, "a.html"), self.tmp, self.tmp),
             artefact_id(os.path.join(self.tmp, "b.html"), self.tmp, self.tmp))
+
+
+@unittest.skipUnless(have_flask(), "Flask is not installed")
+class TestJobReleasesItsPipe(TempCase):
+    """
+    BUG: a finished job held its subprocess pipe open.
+
+    The run loop read the pipe to EOF but never closed it, and CPython
+    releases the read end only when the Popen object is collected. The
+    manager deliberately keeps every Job for the life of the server, so
+    finished runs stay listable -- which meant each completed run also
+    kept a file descriptor, and a server working through a long worksheet
+    accumulated them until it ran out.
+
+    Not a wrong answer, so it belongs in a different class of bug from the
+    rest of this module: it degrades a long-lived server rather than
+    misreporting a specimen. It is pinned here because it is invisible
+    until the limit is hit, and then presents as something else entirely.
+    """
+
+    def test_the_pipe_is_closed_once_the_run_is_over(self):
+        import jobs
+        run_dir = os.path.join(self.tmp, "run")
+        os.makedirs(run_dir)
+        job = jobs.Job("t1", run_dir, sys.executable,
+                       [sys.executable, "-c", "print('hello')"],
+                       {"patient_id": "P"}, {})
+        job.run()
+        self.assertEqual(job.returncode, 0)
+        self.assertTrue(job._proc.stdout.closed,
+                        "the job finished still holding its pipe open")
+
+    def test_output_still_reaches_the_log(self):
+        # Closing the pipe must not cost the log its contents -- the log is
+        # the only record of what a run actually did.
+        import jobs
+        run_dir = os.path.join(self.tmp, "run2")
+        os.makedirs(run_dir)
+        job = jobs.Job("t2", run_dir, sys.executable,
+                       [sys.executable, "-c", "print('marker-line')"],
+                       {"patient_id": "P"}, {})
+        job.run()
+        with open(job.log_path, encoding="utf-8") as fh:
+            self.assertIn("marker-line", fh.read())
 
 
 @unittest.skipUnless(have_flask(), "Flask is not installed")

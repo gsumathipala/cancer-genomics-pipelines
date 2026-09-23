@@ -23,6 +23,7 @@ two-second check into an overnight one.
 import os
 import sys
 import unittest
+import warnings
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TESTS = os.path.join(HERE, "tests")
@@ -36,6 +37,26 @@ def main(argv):
     # bundle's scripts and their own helpers without being a package.
     sys.path.insert(0, TESTS)
     sys.path.insert(0, HERE)
+
+    # Leaked file handles are collected, and reported, at whatever moment
+    # the garbage collector notices -- which is usually inside an unrelated
+    # test. Turning them into errors would therefore fail the wrong test;
+    # they are counted instead and reported once, at the end, against the
+    # run as a whole. A leak does not produce a wrong answer, but it does
+    # degrade a server that is deliberately holding every finished job, so
+    # it should not be something the suite prints and nobody reads.
+    leaks = []
+    warnings.simplefilter("always", ResourceWarning)
+    previous_hook = warnings.showwarning
+
+    def record(message, category, filename, lineno, *args, **kwargs):
+        if issubclass(category, ResourceWarning):
+            leaks.append(f"{filename}:{lineno}: {message}")
+        else:
+            previous_hook(message, category, filename, lineno,
+                          *args, **kwargs)
+
+    warnings.showwarning = record
 
     loader = unittest.TestLoader()
     if names:
@@ -56,7 +77,14 @@ def main(argv):
         for case, reason in result.skipped:
             print(f"  - {case.id().split('.')[-1]}: {reason}")
 
-    return 0 if result.wasSuccessful() else 1
+    warnings.showwarning = previous_hook
+    if leaks:
+        print(f"\n{len(leaks)} leaked file handle(s) -- a resource the code "
+              f"opened and did not close:")
+        for leak in sorted(set(leaks))[:20]:
+            print(f"  - {leak}")
+
+    return 0 if (result.wasSuccessful() and not leaks) else 1
 
 
 if __name__ == "__main__":

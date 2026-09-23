@@ -10,7 +10,7 @@ that tell the two apart.
 import json
 import unittest
 
-from helpers import TempCase, star_log
+from helpers import TempCase, read_text, star_log
 import rna_qc_report as rq
 import align_rna
 
@@ -101,7 +101,7 @@ class TestReport(TempCase):
         path, count = rq.rrna_intervals(gtf, self.path("out/r.bed"))
         self.assertEqual(count, 1)
         # GTF is 1-based inclusive; BED is 0-based half-open.
-        self.assertEqual(open(path).read().strip(), "chr1\t0\t500")
+        self.assertEqual(read_text(path).strip(), "chr1\t0\t500")
 
     def test_a_gtf_with_no_rrna_yields_no_interval_file(self):
         gtf = self.write("g2.gtf",
