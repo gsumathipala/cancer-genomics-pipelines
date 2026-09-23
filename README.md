@@ -316,6 +316,11 @@ coverage_report.py                target coverage: which regions a negative
                                   result is actually entitled to speak for
 panel_profiles.py                 panel profiles: one name configures a run
                                   for its kit's chemistry
+run_tests.py                      the test suite runner — stdlib only,
+                                  nothing to install
+tests/                            123 tests: panel configuration, report
+                                  logic, web routes, command construction,
+                                  one per bug that reached this code
 cancer-genomics-pipelines.1             man page
 
 webapp/                           Flask front end (patient details, batch, cleanup)
@@ -379,6 +384,21 @@ sha256sum -c SHA256SUMS
 
 The same command works inside an installation that `--update` has refreshed:
 the manifest travels with the code, so it describes what is actually there.
+
+---
+
+## Check the code still works
+
+```bash
+python3 run_tests.py
+```
+
+123 tests, about twenty seconds, nothing to install — the suite uses the
+standard library only, like the analysis scripts. It runs no aligner or
+caller; it tests what this bundle decides, which is the part that is
+actually ours. See [TESTING.md](TESTING.md), particularly on why the
+regression tier matters: every bug it pins produced a clean, plausible,
+wrong report rather than an error.
 
 ---
 

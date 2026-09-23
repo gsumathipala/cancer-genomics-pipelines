@@ -734,7 +734,11 @@ def installed_star_indexes(reference_dir):
         if not name.startswith("star_"):
             continue
         path = os.path.join(os.path.expanduser(reference_dir), name)
-        if not os.path.exists(os.path.join(path, "SAindex")):
+        # The SAME completeness test the alignment step will apply. Testing
+        # a single file here and four files there meant a half-built index
+        # could be auto-selected and then rejected a moment later, which
+        # reads as a contradiction rather than as "that index is unfinished".
+        if not index_is_present(path):
             continue
         tail = name.rsplit("_", 1)[-1]
         found.append((path, int(tail) if tail.isdigit() else None))

@@ -168,9 +168,16 @@ def classify(row, min_confidence="medium"):
     row["_splice_note"] = splice_note
     row["_confidence"] = confidence or "unknown"
     row["_meets_confidence"] = rank <= bar
-    # Supporting reads: Arriba splits them across split reads either side of
-    # the breakpoint plus spanning pairs. Summed here because a reader wants
-    # one number, with the parts still in the table.
+    # Supporting reads: split reads either side of the breakpoint PLUS
+    # discordant mates -- total evidence for the event, which is what a
+    # reader scanning a table wants as one number.
+    #
+    # NOTE the deliberate difference from write_pcgr_fusion_tsv(), which
+    # sums only the split reads. PCGR's column is named SplitReads and its
+    # --fusion_min_split_reads threshold is written against split reads, so
+    # feeding it this total would silently inflate every fusion past that
+    # threshold. Two questions, two numbers; the column headings say which
+    # is which.
     total = 0
     for column in ("split_reads1", "split_reads2", "discordant_mates"):
         try:
@@ -307,7 +314,8 @@ def write_html(path, sample_id, rows, summary, context):
 <div class="card">
  <h2>Calls</h2>
  <table>
-  <thead><tr><th>Fusion</th><th>Confidence</th><th>Reads</th>
+  <thead><tr><th>Fusion</th><th>Confidence</th>
+   <th title="Split reads either side of the breakpoint plus discordant mates">Supporting reads</th>
    <th>Breakpoints</th><th>Type / frame</th></tr></thead>
   <tbody>{body or
    '<tr><td colspan="5" class="muted">No fusions were called.</td></tr>'}
@@ -331,6 +339,11 @@ def write_html(path, sample_id, rows, summary, context):
   one tissue and incidental in another -- and it does not claim that an
   unmarked fusion is unimportant. Interpretation belongs to a qualified
   molecular pathologist against current evidence.</p>
+ <p class="muted"><strong>Supporting reads</strong> above counts split
+  reads on both sides of the breakpoint plus discordant mates. The file
+  handed to PCGR counts only the split reads, because PCGR's own
+  <code>SplitReads</code> threshold is defined that way \u2014 so the two
+  numbers for one fusion differ, and deliberately.</p>
  <p class="muted">Fusion calls from RNA are evidence of a transcript, not
   proof of a genomic rearrangement, and callers disagree substantially on
   real data. Orthogonal confirmation (FISH, RT-PCR, or a second caller) is
@@ -343,7 +356,8 @@ def write_html(path, sample_id, rows, summary, context):
 
 def write_tsv(path, rows):
     """The annotated table, for anyone who would rather have a spreadsheet."""
-    columns = ["pair", "confidence", "meets_confidence", "supporting_reads",
+    columns = ["pair", "confidence", "meets_confidence",
+               "supporting_reads_incl_discordant",
                "actionable_genes", "same_gene_event", "breakpoint1",
                "breakpoint2", "type", "reading_frame", "site1", "site2"]
     with open(path, "w", encoding="utf-8", newline="") as fh:
