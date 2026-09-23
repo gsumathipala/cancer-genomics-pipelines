@@ -647,9 +647,15 @@ def new_hybrid_run():
 
 
 @app.route("/submit/hybrid", methods=["POST"])
-def submit_hybrid():
+def submit_hybrid(validate_only=False):
     """
     Queue both halves of a hybrid panel as one action.
+
+    `validate_only` stops after both halves have been checked and returns
+    None, matching submit() and submit_rna(). Without it the worksheet --
+    which calls all three handlers uniformly -- crashed on hybrid rows with
+    a TypeError, and did so during QUEUEING, after earlier rows had already
+    started. Every handler reachable from _submit_via() must accept it.
 
     WHAT THIS SAVES THE OPERATOR
       Two runs, submitted in the right order, with the RNA half linked back
@@ -777,6 +783,9 @@ def submit_hybrid():
             hybrid_pairs=hybrid_panel_pairs(),
             tumour_sites=TUMOUR_SITES), 400
 
+    if validate_only:
+        return None                       # both halves checked out
+
     # Both halves are good. DNA first, so it reaches the front of the
     # serial queue first and its VCF exists by the time the RNA half's
     # report step runs.
@@ -823,6 +832,365 @@ def _submit_via(handler, form_values, patient, validate_only=False):
     payload.update({k: v for k, v in patient.items() if v})
     with app.test_request_context("/", method="POST", data=payload):
         return handler(validate_only=validate_only)
+
+
+# ---------------------------------------------------------------------------
+# The multi-sample worksheet
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS
+#   Batch mode already queued one run per sample. What it could not do was
+#   give each sample its OWN patient. Every run in a batch inherited a
+#   single patient record with the sample name appended to its specimen id,
+#   which is wrong for the case batches actually are: a sequencing run
+#   carrying several different people.
+#
+#   The worksheet is the lab's own artefact -- one row per specimen, filled
+#   in before the run -- rendered as a form. Each row becomes its own job,
+#   with its own patient details, its own assay, and its own report.
+#
+# SEQUENCING IS ALREADY SEQUENTIAL
+#   Nothing here needs to orchestrate "finish one sample, then start the
+#   next". JobManager is a serial queue by design (BWA-MEM2 wants ~32 GB
+#   and STAR ~30 GB; two concurrent runs thrash rather than go faster), and
+#   the clinical report runs as part of each job before the next begins. So
+#   queueing N rows gives exactly the behaviour asked for: analysis and
+#   reporting complete for one sample before the next starts.
+#
+# NOTHING IS QUEUED UNTIL EVERY ROW VALIDATES
+#   The same rule the hybrid form follows, and for a stronger reason here:
+#   a worksheet of twelve samples that queued the first four and then
+#   rejected the fifth would leave the operator with a half-started batch
+#   and no clear way back.
+
+# Per-row fields that are NOT patient details. Everything in PATIENT_FIELDS
+# is also per row; see worksheet_row_fields().
+WORKSHEET_RUN_FIELDS = ("include", "sample", "assay", "panel",
+                        "r1", "r2", "rna_r1", "rna_r2")
+
+# The columns shown inline in the grid. The rest of the patient fields are
+# per row too, behind a per-row expander -- a worksheet with eighteen
+# visible columns is one nobody fills in correctly.
+WORKSHEET_INLINE_PATIENT = ("patient_id", "specimen_id", "diagnosis")
+
+
+def worksheet_row_fields():
+    """Every field a worksheet row carries, run fields then patient ones."""
+    return list(WORKSHEET_RUN_FIELDS) + [k for k, _ in PATIENT_FIELDS]
+
+
+def parse_worksheet_rows(form):
+    """
+    Pull the rows out of a flat form submission.
+
+    Fields are named row-<n>-<field>. A row is kept when it is ticked AND
+    names a sample; anything else is a blank line in the worksheet, which
+    is normal -- operators leave spare rows.
+    """
+    indices = set()
+    for key in form:
+        if key.startswith("row-"):
+            parts = key.split("-", 2)
+            if len(parts) == 3 and parts[1].isdigit():
+                indices.add(int(parts[1]))
+
+    rows = []
+    for index in sorted(indices):
+        row = {field: (form.get(f"row-{index}-{field}") or "").strip()
+               for field in worksheet_row_fields()}
+        row["_index"] = index
+        if not row.get("sample"):
+            continue                      # an empty line, not an error
+        if not row.get("include"):
+            continue                      # deliberately excluded
+        rows.append(row)
+    return rows
+
+
+def worksheet_row_to_form(row, shared):
+    """
+    Turn one worksheet row into the form dict a submit handler expects.
+
+    The shared settings (output root, reference, resources, threads) are
+    the base; the row overrides what is specific to it. The per-sample
+    output directory is derived from the sample name, so two rows cannot
+    write into each other's results.
+    """
+    values = dict(shared)
+    assay = (row.get("assay") or "dna").lower()
+
+    base = shared.get("output_dir") or ""
+    values["output_dir"] = sample_output_dir(base, row["sample"])
+
+    # Never inherit the shared form's auto-discovery: the row names its
+    # files explicitly, and auto-discover would override them and
+    # reintroduce exactly the ambiguity the worksheet exists to remove.
+    for key in ("auto_discover", "batch_mode", "second_is_matched_normal",
+                "manifest"):
+        values.pop(key, None)
+
+    if row.get("panel"):
+        values["panel"] = row["panel"]
+
+    # The submit handlers require an input directory even when the FASTQs
+    # are named explicitly -- it is how they resolve a bare filename. A
+    # worksheet row names full paths, so the directory is implied by them;
+    # deriving it here is what lets a row whose files live anywhere be
+    # submitted by the same handler as a hand-filled form.
+    def _dir_of(*paths):
+        for candidate in paths:
+            if candidate:
+                return os.path.dirname(os.path.abspath(candidate))
+        return ""
+
+    if assay == "rna":
+        values["sample"] = row["sample"]
+        values["r1"] = row.get("r1", "")
+        values["r2"] = row.get("r2", "")
+        values["input_dir"] = _dir_of(row.get("r1"), row.get("r2"))
+    else:
+        values["tumour_sample"] = row["sample"]
+        values["tumour_r1"] = row.get("r1", "")
+        values["tumour_r2"] = row.get("r2", "")
+        values["input_dir"] = _dir_of(row.get("r1"), row.get("r2"))
+
+    # A hybrid row carries two libraries: R1/R2 are the DNA pair, and the
+    # RNA pair has its own columns.
+    if assay == "hybrid":
+        values["dna_sample"] = row["sample"]
+        values["dna_r1"] = row.get("r1", "")
+        values["dna_r2"] = row.get("r2", "")
+        values["rna_sample"] = row["sample"]
+        values["rna_r1"] = row.get("rna_r1", "")
+        values["rna_r2"] = row.get("rna_r2", "")
+        # Each half resolves its own files, which may sit in different
+        # folders -- a hybrid kit's DNA and RNA libraries frequently do.
+        values["dna_input_dir"] = _dir_of(row.get("r1"), row.get("r2"))
+        values["rna_input_dir"] = _dir_of(row.get("rna_r1"),
+                                          row.get("rna_r2"))
+        values["input_dir"] = values["dna_input_dir"]
+    return values
+
+
+def worksheet_row_patient(row, shared):
+    """
+    The patient record for one row.
+
+    Row values win; anything the row leaves blank falls back to the shared
+    header (referring clinician and specimen type are usually constant
+    across a worksheet, and typing them twelve times invites typos).
+    """
+    patient = {}
+    for key, _label in PATIENT_FIELDS:
+        patient[key] = row.get(key) or shared.get(key, "") or ""
+    return patient
+
+
+@app.route("/new/worksheet")
+def new_worksheet():
+    """The worksheet form, optionally prefilled by scanning a directory."""
+    return render_template(
+        "worksheet.html",
+        patient_fields=PATIENT_FIELDS,
+        inline_patient=WORKSHEET_INLINE_PATIENT,
+        roots=app.config["ALLOWED_ROOTS"],
+        default_runs=app.config["RUNS_DIR"],
+        defaults=dict(discover_defaults(), **default_rna_resources()),
+        dna_panels=[o for o in panel_options()
+                    if not o["chemistry"].startswith("rna-")],
+        rna_panels=rna_panel_options(),
+        tumour_sites=TUMOUR_SITES,
+        rows=[], scanned=None, errors=None, form=None)
+
+
+@app.route("/worksheet/scan", methods=["POST"])
+def worksheet_scan():
+    """
+    Prefill the worksheet from a directory of FASTQs.
+
+    The single biggest saving this page offers: point at the run folder and
+    get one row per detected sample, with the file paths already correct.
+    The operator then fills in who each sample belongs to -- which is the
+    part only they can know.
+
+    Uses the pipeline's own pairing rules via discover_pairs(), so the
+    worksheet cannot disagree with what the engine would find.
+    """
+    form = {k: v.strip() for k, v in request.form.items()}
+    errors = []
+    rows = []
+    scanned = None
+
+    try:
+        input_dir = safe_path(form.get("scan_dir"), must_exist=True)
+        pairs, warnings = discover_pairs(input_dir,
+                                         bool(form.get("scan_recursive")))
+        for warning in warnings:
+            errors.append(f"input scan: {warning}")
+        scanned = input_dir
+        default_assay = form.get("scan_assay") or "dna"
+        for pair in pairs:
+            rows.append({
+                "include": "on",
+                "sample": pair["sample"],
+                "assay": default_assay,
+                "r1": pair.get("r1", ""),
+                "r2": pair.get("r2", ""),
+            })
+        if not pairs:
+            errors.append(f"No FASTQ pairs found in {input_dir}.")
+    except ValueError as exc:
+        errors.append(f"Directory to scan: {exc}")
+
+    return render_template(
+        "worksheet.html",
+        patient_fields=PATIENT_FIELDS,
+        inline_patient=WORKSHEET_INLINE_PATIENT,
+        roots=app.config["ALLOWED_ROOTS"],
+        default_runs=app.config["RUNS_DIR"],
+        defaults=dict(discover_defaults(), **default_rna_resources()),
+        dna_panels=[o for o in panel_options()
+                    if not o["chemistry"].startswith("rna-")],
+        rna_panels=rna_panel_options(),
+        tumour_sites=TUMOUR_SITES,
+        rows=rows, scanned=scanned,
+        errors=errors or None, form=form)
+
+
+@app.route("/submit/worksheet", methods=["POST"])
+def submit_worksheet():
+    """
+    Validate every row, then queue them in worksheet order.
+
+    Two properties matter and both are deliberate:
+
+    NOTHING STARTS UNTIL EVERYTHING VALIDATES. Each row is checked by the
+    SAME handler that would submit it on its own, in validate-only mode.
+    Re-implementing the checks here is how the worksheet path would drift
+    away from the single-sample path, and the worksheet is the one nobody
+    exercises by hand.
+
+    ROWS RUN IN ORDER, ONE AT A TIME. That is not orchestrated here -- the
+    job queue is serial and each job produces its report before the next
+    begins. Queueing in worksheet order is all that is needed for "finish
+    one sample, then the next".
+    """
+    form = {k: v.strip() for k, v in request.form.items()}
+    rows = parse_worksheet_rows(form)
+
+    # Shared header: everything not per row. The row fields are stripped so
+    # a stray top-level value cannot leak into every run.
+    shared = {k: v for k, v in form.items() if not k.startswith("row-")}
+    shared.pop("scan_dir", None)
+    shared.pop("scan_recursive", None)
+    shared.pop("scan_assay", None)
+
+    errors = []
+    if not rows:
+        errors.append(
+            "No rows to run. Tick the samples you want and give each one a "
+            "name, or scan a directory to fill the worksheet in.")
+
+    seen = {}
+    for row in rows:
+        name = row["sample"]
+        if name in seen:
+            errors.append(
+                f"Sample name {name!r} appears more than once (rows "
+                f"{seen[name] + 1} and {row['_index'] + 1}). Each row writes "
+                f"into a directory named after its sample, so duplicates "
+                f"would overwrite each other's results.")
+        seen[name] = row["_index"]
+
+        if row.get("assay") not in ("dna", "rna", "hybrid"):
+            errors.append(f"Row {row['_index'] + 1} ({name}): choose an "
+                          f"assay.")
+        if not row.get("patient_id") and not row.get("specimen_id") \
+                and not shared.get("patient_id") \
+                and not shared.get("specimen_id"):
+            errors.append(
+                f"Row {row['_index'] + 1} ({name}): give a patient/MRN or a "
+                f"specimen ID, so the report can be attributed to "
+                f"something.")
+
+    # --- validate every row before starting any of them ----------------
+    if not errors:
+        for row in rows:
+            assay = row["assay"]
+            values = worksheet_row_to_form(row, shared)
+            patient = worksheet_row_patient(row, shared)
+            handler = {"dna": submit, "rna": submit_rna,
+                       "hybrid": submit_hybrid}[assay]
+            problem = _submit_via(handler, values, patient,
+                                  validate_only=True)
+            if problem is not None:
+                # The handler rendered its own error page naming the
+                # fields. Wrap it so the operator knows WHICH row failed --
+                # on a twelve-row worksheet that is the whole message.
+                errors.append(
+                    f"Row {row['_index'] + 1} ({row['sample']}, "
+                    f"{assay.upper()}) did not validate. Its details are "
+                    f"below; nothing has been queued.")
+                return render_worksheet(rows, form, errors,
+                                        detail=problem)
+
+    if errors:
+        return render_worksheet(rows, form, errors), 400
+
+    # --- queue, in worksheet order -------------------------------------
+    queued = []
+    first = None
+    for row in rows:
+        assay = row["assay"]
+        values = worksheet_row_to_form(row, shared)
+        patient = worksheet_row_patient(row, shared)
+        values["worksheet_row"] = str(row["_index"] + 1)
+        values["worksheet_of"] = str(len(rows))
+
+        handler = {"dna": submit, "rna": submit_rna,
+                   "hybrid": submit_hybrid}[assay]
+        try:
+            response = _submit_via(handler, values, patient)
+        except Exception as exc:          # noqa: BLE001 - surfaced below
+            # A crash mid-batch is the worst outcome here: some rows are
+            # already running and the operator is looking at a stack
+            # trace. Turn it into a page that says exactly how far it got.
+            errors.append(
+                f"Row {row['_index'] + 1} ({row['sample']}) raised "
+                f"{type(exc).__name__}: {exc}. {len(queued)} earlier row(s) "
+                f"ARE already running; the remaining rows were not "
+                f"started.")
+            return render_worksheet(rows, form, errors), 500
+        if not hasattr(response, "location"):
+            # Should not happen -- every row validated a moment ago -- but
+            # a run that fails to queue must not be silently missing from a
+            # batch the operator believes is complete.
+            errors.append(
+                f"Row {row['_index'] + 1} ({row['sample']}) validated but "
+                f"could not be queued. {len(queued)} earlier row(s) ARE "
+                f"running; the rest were not started.")
+            return render_worksheet(rows, form, errors), 500
+        job_id = str(response.location).rsplit("/", 1)[-1]
+        queued.append(job_id)
+        first = first or job_id
+
+    return redirect(url_for("job_view", job_id=first))
+
+
+def render_worksheet(rows, form, errors, detail=None, status=None):
+    """Re-render the worksheet with what was typed and what went wrong."""
+    return render_template(
+        "worksheet.html",
+        patient_fields=PATIENT_FIELDS,
+        inline_patient=WORKSHEET_INLINE_PATIENT,
+        roots=app.config["ALLOWED_ROOTS"],
+        default_runs=app.config["RUNS_DIR"],
+        defaults=dict(discover_defaults(), **default_rna_resources()),
+        dna_panels=[o for o in panel_options()
+                    if not o["chemistry"].startswith("rna-")],
+        rna_panels=rna_panel_options(),
+        tumour_sites=TUMOUR_SITES,
+        rows=rows, scanned=None, errors=errors, form=form,
+        detail=detail)
 
 
 @app.route("/panels")

@@ -233,3 +233,34 @@ a.pathway li { font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
 a.pathway .go { font-size: 13px; font-weight: 600; color: var(--accent); }
 a.pathway.rna  .go { color: #6b4fbb; }
 a.pathway.both .go { color: var(--ok); }
+
+/* ---------------------------------------------------------------------
+   The multi-sample worksheet.
+
+   It is a grid because a lab worksheet is a grid: one row per specimen,
+   scanned down a column at a time. Inputs are sized to their content so a
+   row reads as a row rather than as a wall of identical boxes, and the
+   table scrolls sideways rather than wrapping -- a wrapped row loses the
+   one property that makes a worksheet checkable at a glance.
+   --------------------------------------------------------------------- */
+.sheetwrap { overflow-x: auto; margin: 0 -18px; padding: 0 18px; }
+table.sheet { min-width: 100%; }
+table.sheet th { white-space: nowrap; }
+table.sheet td { padding: 5px 6px; vertical-align: middle; }
+table.sheet input[type=text], table.sheet input:not([type]),
+table.sheet select {
+  padding: 4px 6px; font-size: 12.5px; width: 100%;
+}
+table.sheet input[type=checkbox] { margin: 0; }
+tr.sheetrow:nth-child(4n+1) { background: #fbfcfd; }
+tr.morerow > td { background: #f6f8fa; }
+tr.morerow .fields { margin: 4px 0 8px; }
+
+button.linkish {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--accent); font-size: 12px; text-decoration: underline;
+}
+.detailframe {
+  max-height: 340px; overflow: auto; border: 1px solid var(--line);
+  border-radius: 6px; padding: 10px; margin-top: 8px; background: #fff;
+}

@@ -143,6 +143,13 @@ and PCGR produces a single combined report — rather than leaving someone to
 remember to link two runs after the fact. Profiles name their partner, so
 choosing one half offers the other.
 
+For a sequencing run carrying several specimens there is a **multi-sample
+worksheet**: one row per specimen, each with its own patient details and
+its own assay, queued to run one after another. Point it at the run's FASTQ
+folder and it fills itself in. Unlike the old batch tick-box — which gave
+every sample a single shared patient record — each row is a distinct
+person, reported separately.
+
 Every output of a run is then a labelled link on its page, grouped by the
 question it answers, with *"can this result be trusted?"* deliberately
 ahead of the findings.

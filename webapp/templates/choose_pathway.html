@@ -53,6 +53,19 @@
 
 </div>
 
+<section class="card">
+  <h2>More than one sample?</h2>
+  <p class="hint">The three cards above start <strong>one</strong> run. For
+    a sequencing run carrying several specimens &mdash; usually several
+    different patients &mdash; use the
+    <a href="{{ url_for('new_worksheet') }}">multi-sample worksheet</a>:
+    one row per specimen, each with its own patient details and its own
+    assay, queued to run one after another.</p>
+  <p class="hint">Point it at the run's FASTQ folder and it fills itself
+    in.</p>
+  <p><a class="button ghost" href="{{ url_for('new_worksheet') }}">Open the worksheet</a></p>
+</section>
+
 {% if hybrid_pairs %}
 <section class="card">
   <h2>Kits known to have both halves</h2>

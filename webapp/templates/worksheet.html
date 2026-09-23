@@ -1,0 +1,266 @@
+{#- Created by Brainstorm, 2026. -#}
+{% extends "base.html" %}
+{% block title %}Worksheet &middot; Cancer Genomics Pipelines{% endblock %}
+{% block content %}
+
+<h1>Multi-sample worksheet</h1>
+
+{% if errors %}
+<div class="errors">
+  <strong>Nothing has been queued:</strong>
+  <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  <p class="hint">Every row is checked before any run starts, so a mistake
+    in one row never leaves you with a half-started batch.</p>
+</div>
+{% endif %}
+
+<section class="card">
+  <p class="hint">One row per specimen. Each row becomes its own run, with
+    its own patient details, its own assay and its own report &mdash; which
+    is the difference between this and the old batch tick-box, where every
+    sample inherited one patient record.</p>
+  <p class="hint">Runs execute <strong>one at a time, in worksheet
+    order</strong>. Analysis and reporting finish for one sample before the
+    next begins; that is the job queue's normal behaviour, not something
+    you need to manage.</p>
+</section>
+
+<section class="card">
+  <h2>1 &middot; Fill the worksheet from a folder</h2>
+  <p class="hint">Point at the sequencing run's FASTQ folder and every
+    sample found becomes a row, with its file paths already filled in. You
+    then say who each one belongs to &mdash; the part only you know.</p>
+  <form method="post" action="{{ url_for('worksheet_scan') }}">
+    <div class="fields">
+      <label><span>Folder of FASTQs</span>
+        <input name="scan_dir" value="{{ (form or {}).get('scan_dir') or scanned or '' }}"
+               placeholder="/data/runs/250914_NB551"></label>
+      <label><span>Assay to preselect for each row</span>
+        <select name="scan_assay">
+          {% for value, label in [('dna','DNA — variants'), ('rna','RNA — fusions'), ('hybrid','Both (hybrid)')] %}
+            <option value="{{ value }}" {% if (form or {}).get('scan_assay')==value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select></label>
+    </div>
+    <label class="check"><input type="checkbox" name="scan_recursive"
+      {% if (form or {}).get('scan_recursive') %}checked{% endif %}>
+      Search subfolders too</label>
+    <div class="actions">
+      <button class="button ghost" type="submit">Scan folder</button>
+      {% if scanned %}<span class="small">Scanned <code>{{ scanned }}</code>
+        &mdash; {{ rows|length }} sample(s) found.</span>{% endif %}
+    </div>
+  </form>
+  <p class="hint">Scanning replaces the rows below, so scan first and fill
+    in details afterwards. You can also skip this and type rows by hand.</p>
+</section>
+
+<form method="post" action="{{ url_for('submit_worksheet') }}" class="stack">
+  <input type="hidden" name="form_rendered" value="1">
+
+  <section class="card">
+    <h2>2 &middot; Settings shared by every row</h2>
+    <div class="fields">
+      <label><span>Output folder (a subfolder per sample)</span>
+        <input name="output_dir" required
+               value="{{ (form or {}).get('output_dir','') }}"
+               placeholder="{{ default_runs }}/250914_NB551"></label>
+      <label><span>Reference</span>
+        <input name="reference" required
+               value="{{ (form or {}).get('reference') or (defaults or {}).get('reference','hg38') }}"></label>
+      <label><span>Panel BED (DNA rows)</span>
+        <input name="panel_bed" value="{{ (form or {}).get('panel_bed','') }}"></label>
+      <label><span>Annotation GTF (RNA rows)</span>
+        <input name="gtf" value="{{ (form or {}).get('gtf') or (defaults or {}).get('gtf','') }}"></label>
+      <label><span>STAR index (RNA rows)</span>
+        <input name="star_index" value="{{ (form or {}).get('star_index') or (defaults or {}).get('star_index','') }}"></label>
+      <label><span>Tumour site</span>
+        <select name="pcgr_tumour_site">
+          {% for code, label in (tumour_sites or []) %}
+            <option value="{{ code }}" {% if (form or {}).get('pcgr_tumour_site')|string == code|string %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select></label>
+      <label><span>Referring clinician</span>
+        <input name="referring_clinician" value="{{ (form or {}).get('referring_clinician','') }}"></label>
+      <label><span>Specimen type</span>
+        <input name="specimen_type" value="{{ (form or {}).get('specimen_type','') }}"
+               placeholder="e.g. FFPE block"></label>
+      <label><span>Threads</span>
+        <input name="threads" type="number" min="1"
+               value="{{ (form or {}).get('threads','8') }}"></label>
+    </div>
+    <p class="hint">Clinician and specimen type fill in any row that leaves
+      them blank &mdash; they are usually the same across a worksheet, and
+      typing them twelve times invites typos. Resources left blank
+      (COSMIC, dbSNP, gnomAD, the PCGR bundle) are filled from what is
+      installed, exactly as on the single-sample forms.</p>
+  </section>
+
+  <section class="card">
+    <h2>3 &middot; The samples</h2>
+    <p class="hint">Untick a row to leave it out without deleting it. Rows
+      with no sample name are ignored.</p>
+
+    <div class="sheetwrap">
+      <table class="grid sheet">
+        <thead>
+          <tr>
+            <th title="Include this row in the run">Run</th>
+            <th>Sample</th>
+            <th>Assay</th>
+            <th>Patient / MRN</th>
+            <th>Specimen ID</th>
+            <th>Diagnosis</th>
+            <th>Read 1</th>
+            <th>Read 2</th>
+            <th title="Only used by hybrid rows">RNA Read 1</th>
+            <th title="Only used by hybrid rows">RNA Read 2</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="sheetbody">
+          {% set shown = rows if rows else [{}] %}
+          {% for row in shown %}
+          {% set i = loop.index0 %}
+          <tr class="sheetrow">
+            <td><input type="checkbox" name="row-{{ i }}-include"
+                       {% if row.get('include') or not rows %}checked{% endif %}></td>
+            <td><input name="row-{{ i }}-sample" value="{{ row.get('sample','') }}"
+                       size="12" placeholder="S1"></td>
+            <td>
+              <select name="row-{{ i }}-assay">
+                {% for value, label in [('dna','DNA'), ('rna','RNA'), ('hybrid','Both')] %}
+                  <option value="{{ value }}" {% if row.get('assay','dna')==value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td><input name="row-{{ i }}-patient_id" value="{{ row.get('patient_id','') }}" size="10"></td>
+            <td><input name="row-{{ i }}-specimen_id" value="{{ row.get('specimen_id','') }}" size="10"></td>
+            <td><input name="row-{{ i }}-diagnosis" value="{{ row.get('diagnosis','') }}" size="14"></td>
+            <td><input name="row-{{ i }}-r1" value="{{ row.get('r1','') }}" size="26"></td>
+            <td><input name="row-{{ i }}-r2" value="{{ row.get('r2','') }}" size="26"></td>
+            <td><input name="row-{{ i }}-rna_r1" value="{{ row.get('rna_r1','') }}" size="20"></td>
+            <td><input name="row-{{ i }}-rna_r2" value="{{ row.get('rna_r2','') }}" size="20"></td>
+            <td><button type="button" class="linkish morebtn"
+                        data-row="{{ i }}">more</button></td>
+          </tr>
+          <tr class="morerow" id="more-{{ i }}" hidden>
+            <td colspan="11">
+              <div class="fields">
+                {% for key, label in patient_fields %}
+                  {% if key not in inline_patient %}
+                  <label><span>{{ label }}</span>
+                    {% if key == 'sex' %}
+                      <select name="row-{{ i }}-sex">
+                        {% for opt in ['', 'Female', 'Male', 'Other', 'Not recorded'] %}
+                          <option value="{{ opt }}" {% if row.get('sex')==opt %}selected{% endif %}>{{ opt or '—' }}</option>
+                        {% endfor %}
+                      </select>
+                    {% elif key == 'notes' %}
+                      <textarea name="row-{{ i }}-notes" rows="2">{{ row.get('notes','') }}</textarea>
+                    {% else %}
+                      <input type="{{ 'date' if 'date' in key or key=='dob' else 'text' }}"
+                             name="row-{{ i }}-{{ key }}" value="{{ row.get(key,'') }}">
+                    {% endif %}
+                  </label>
+                  {% endif %}
+                {% endfor %}
+                <label><span>Panel profile (overrides the shared one)</span>
+                  <select name="row-{{ i }}-panel">
+                    <option value="">— none —</option>
+                    <optgroup label="DNA">
+                      {% for p in (dna_panels or []) %}
+                        <option value="{{ p.id }}" {% if row.get('panel')==p.id %}selected{% endif %}>{{ p.name }}</option>
+                      {% endfor %}
+                    </optgroup>
+                    <optgroup label="RNA">
+                      {% for p in (rna_panels or []) %}
+                        <option value="{{ p.id }}" {% if row.get('panel')==p.id %}selected{% endif %}>{{ p.name }}</option>
+                      {% endfor %}
+                    </optgroup>
+                  </select></label>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="button ghost" id="addrow">Add a row</button>
+      <span class="small">RNA Read 1/2 are only used by rows set to
+        <em>Both</em>. For a DNA or RNA row, Read 1/2 are that assay's
+        files.</span>
+    </div>
+  </section>
+
+  {% if detail %}
+  <section class="card warn">
+    <h2>What the failing row reported</h2>
+    <p class="hint">Rendered by the same form that would have submitted
+      that row on its own.</p>
+    <details><summary>Show details</summary>
+      <div class="detailframe">{{ detail|safe }}</div>
+    </details>
+  </section>
+  {% endif %}
+
+  <div class="actions">
+    <button type="submit" class="button">Queue all ticked rows</button>
+    <a href="{{ url_for('choose_pathway') }}">Back</a>
+  </div>
+</form>
+
+<script>
+// Two conveniences only. Everything the form actually does is server-side:
+// rows are parsed, validated and queued there, so a page with JavaScript
+// disabled still submits a worksheet correctly.
+(function () {
+  var body = document.getElementById('sheetbody');
+
+  // Per-row expander for the patient fields that do not fit inline.
+  document.addEventListener('click', function (ev) {
+    var btn = ev.target.closest('.morebtn');
+    if (!btn) { return; }
+    var row = document.getElementById('more-' + btn.dataset.row);
+    if (row) { row.hidden = !row.hidden; btn.textContent = row.hidden ? 'more' : 'less'; }
+  });
+
+  // Add a blank row by cloning the last one and renumbering its fields.
+  var add = document.getElementById('addrow');
+  if (add && body) {
+    add.addEventListener('click', function () {
+      var rows = body.querySelectorAll('tr.sheetrow');
+      var last = rows[rows.length - 1];
+      var lastMore = document.getElementById('more-' + (rows.length - 1));
+      var n = rows.length;
+
+      function renumber(node) {
+        node.querySelectorAll('[name]').forEach(function (el) {
+          el.name = el.name.replace(/^row-\d+-/, 'row-' + n + '-');
+          if (el.type === 'checkbox') { el.checked = true; }
+          else if (el.tagName === 'SELECT') { el.selectedIndex = 0; }
+          else { el.value = ''; }
+        });
+      }
+
+      var clone = last.cloneNode(true);
+      renumber(clone);
+      var btn = clone.querySelector('.morebtn');
+      if (btn) { btn.dataset.row = n; btn.textContent = 'more'; }
+      body.appendChild(clone);
+
+      if (lastMore) {
+        var moreClone = lastMore.cloneNode(true);
+        moreClone.id = 'more-' + n;
+        moreClone.hidden = true;
+        renumber(moreClone);
+        body.appendChild(moreClone);
+      }
+    });
+  }
+})();
+</script>
+
+{% endblock %}

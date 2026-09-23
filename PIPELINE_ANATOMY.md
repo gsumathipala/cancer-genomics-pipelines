@@ -1150,6 +1150,19 @@ digest of each file's path.
 > following it, the link must address **content, not position**. This class
 > of bug is invisible to "does it return 200?" testing.
 
+**A batch is usually several patients, not one.** Batch mode originally
+queued one run per sample but gave them all a *single* patient record with
+the sample name appended to its specimen id. That is wrong for what a batch
+actually is — a sequencing run carrying several different people — and it
+is the kind of wrong that produces a correctly-formatted report attributed
+to the wrong person. The multi-sample worksheet replaces it: one row per
+specimen, each with its own patient, its own assay, and its own report.
+
+> **Pearl.** When a feature loops over N things, check whether the metadata
+> around it should loop too. "Do the same thing N times" and "do it for N
+> different subjects" look identical in the code and are completely
+> different clinically.
+
 **Patient identifiers never touch the command line.** They live in one JSON
 file beside the run, read only when a report is produced. The pipeline
 subprocess is never told them, so they cannot reach a tool's stdout, a
