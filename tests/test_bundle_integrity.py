@@ -48,10 +48,13 @@ class TestEveryScriptCompiles(unittest.TestCase):
 
     def test_all_modules_compile(self):
         # A syntax error in a rarely-run script otherwise surfaces only
-        # when a run reaches it, which can be an hour in.
+        # when a run reaches it, which can be an hour in. docs/ is
+        # included: the diagram generator is run by hand, so nothing else
+        # would ever notice it had been broken.
         with tempfile.TemporaryDirectory() as scratch:
             for path in (list(python_files()) + list(python_files("webapp"))
-                         + list(python_files("tests"))):
+                         + list(python_files("tests"))
+                         + list(python_files("docs"))):
                 with self.subTest(module=os.path.basename(path)):
                     # Byte-code goes to scratch: compiling in place would
                     # litter the bundle with __pycache__ directories that
@@ -66,8 +69,9 @@ class TestWatermark(unittest.TestCase):
 
     def test_first_line_names_the_author(self):
         pattern = re.compile(r"Created by Brainstorm", re.IGNORECASE)
-        for path in list(python_files()) + list(python_files("webapp")) \
-                + list(python_files("tests")):
+        for path in (list(python_files()) + list(python_files("webapp"))
+                     + list(python_files("tests"))
+                     + list(python_files("docs"))):
             with self.subTest(module=os.path.relpath(path, ROOT)):
                 with open(path, encoding="utf-8") as fh:
                     head = "".join(fh.readline() for _ in range(6))
@@ -96,6 +100,10 @@ class TestDependencyPromise(unittest.TestCase):
         return found
 
     def test_analysis_scripts_import_only_the_standard_library(self):
+        # Deliberately the root scripts only. docs/make_diagram.py uses
+        # Pillow, and that is fine: it is a development tool that draws the
+        # illustration, never something a user needs in order to run an
+        # analysis. The promise in requirements.txt is about the latter.
         local = {os.path.basename(p)[:-3] for p in python_files()}
         for path in python_files():
             with self.subTest(module=os.path.basename(path)):
@@ -174,7 +182,8 @@ class TestDocumentationPointsAtRealFiles(unittest.TestCase):
                 self.assertTrue(
                     os.path.exists(os.path.join(ROOT, name))
                     or os.path.exists(os.path.join(ROOT, "webapp", name))
-                    or os.path.exists(os.path.join(ROOT, "tests", name)),
+                    or os.path.exists(os.path.join(ROOT, "tests", name))
+                    or os.path.exists(os.path.join(ROOT, "docs", name)),
                     f"documentation refers to {name}, which is not here")
 
     def test_research_use_only_is_stated_first(self):
@@ -187,3 +196,32 @@ class TestDocumentationPointsAtRealFiles(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheDiagramAgreesWithTheCode(unittest.TestCase):
+    """
+    The illustration in the README is generated, not drawn.
+
+    A hand-drawn diagram stops being true the first time a step is
+    renamed, and nothing tells you. The generator transcribes the step
+    lists and can compare them against the banners the engines print, so
+    that drift becomes a test failure rather than a misleading picture on
+    the front page of the repository.
+    """
+
+    def test_step_lists_match_the_engines(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "make_diagram", os.path.join(ROOT, "docs", "make_diagram.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.check(), [])
+
+    def test_the_rendered_files_are_present(self):
+        for name in ("pipeline_overview.png", "pipeline_overview.svg"):
+            path = os.path.join(ROOT, "docs", name)
+            with self.subTest(file=name):
+                self.assertTrue(os.path.exists(path))
+                # A zero-byte image still renders as a broken link, which
+                # is exactly the kind of thing nobody checks after a merge.
+                self.assertGreater(os.path.getsize(path), 10_000)
