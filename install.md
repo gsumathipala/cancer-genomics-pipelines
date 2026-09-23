@@ -488,7 +488,7 @@ update possible later without anyone having to remember the path:
 python3 /path/to/new_bundle/install_pipeline.py --update
 
 # First time on an installation that predates the record, name it once:
-python3 install_pipeline.py --update --code-dir ~/DNA_pipeline_installer
+python3 install_pipeline.py --update --code-dir ~/Cancer_Genomics_Pipelines
 
 # Or just ask whether it is behind, changing nothing:
 python3 install_pipeline.py --check

@@ -38,7 +38,7 @@ licence.
 
 ```bash
 # 1. Copy this directory to the target machine, then:
-cd DNA_pipeline_installer
+cd Cancer_Genomics_Pipelines
 
 # 2. See what is missing. Changes nothing.
 python3 install_pipeline.py --check
@@ -66,7 +66,7 @@ environment, so it takes seconds — the 70 GB of databases is not what changed.
 
 The installer records where the code lives, so `--update` finds it on its own.
 The first time you update an installation that predates that record, point at
-it once with `--code-dir ~/DNA_pipeline_installer`; it is remembered after
+it once with `--code-dir ~/Cancer_Genomics_Pipelines`; it is remembered after
 that. `python3 install_pipeline.py --check` says whether the installed code
 matches the bundle you are holding, and changes nothing.
 

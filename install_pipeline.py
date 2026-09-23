@@ -85,7 +85,7 @@ UPDATING AN EXISTING INSTALLATION
   install time. The first time you update an installation that predates
   that record, say where it is:
 
-    python3 install_pipeline.py --update --code-dir ~/DNA_pipeline_installer
+    python3 install_pipeline.py --update --code-dir ~/Cancer_Genomics_Pipelines
 
   and it is remembered from then on. --check reports whether the installed
   code matches the bundle you are holding, without changing anything.
