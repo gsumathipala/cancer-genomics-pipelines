@@ -89,6 +89,30 @@
         <input name="threads" type="number" min="1"
                value="{{ (form or {}).get('threads','8') }}"></label>
     </div>
+    <label class="check"><input type="checkbox" name="pcgr_estimate_tmb"
+      {% if form is none or (form or {}).get('pcgr_estimate_tmb') %}checked{% endif %}>
+      Estimate tumour mutational burden
+      <span class="hint inline">&mdash; PCGR leaves this off by default and
+      says nothing when it is off: the report simply has no TMB section,
+      which reads as &ldquo;nothing found&rdquo; rather than &ldquo;never
+      calculated&rdquo;.</span></label>
+    <label class="check"><input type="checkbox" name="pcgr_estimate_signatures"
+      {% if form is none or (form or {}).get('pcgr_estimate_signatures') %}checked{% endif %}>
+      Fit mutational signatures
+      <span class="hint inline">&mdash; wants a few hundred SNVs to be
+      trustworthy.</span></label>
+    <label class="check"><input type="checkbox" name="pcgr_estimate_msi"
+      {% if (form or {}).get('pcgr_estimate_msi') %}checked{% endif %}>
+      Ask PCGR to predict MSI
+      <span class="hint inline">&mdash; off by default: PCGR honours it
+      only for WGS/WES tumour&ndash;normal runs, so on a panel it produces
+      nothing. Supply MSI models for MSIsensor2 instead.</span></label>
+    <label class="check"><input type="checkbox" name="dry_run"
+      {% if (form or {}).get('dry_run') %}checked{% endif %}>
+      Dry run &mdash; print every command without executing anything
+      <span class="hint inline">&mdash; the cheapest way to check a whole
+      worksheet before committing hours to it.</span></label>
+
     <p class="hint">Tumour site, clinician and specimen type fill in any row
       that leaves them blank &mdash; a worksheet is often one tumour type,
       and setting it once beats setting it twelve times. <strong>Any row
