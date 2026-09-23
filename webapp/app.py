@@ -871,7 +871,13 @@ WORKSHEET_RUN_FIELDS = ("include", "sample", "assay", "panel",
 # The columns shown inline in the grid. The rest of the patient fields are
 # per row too, behind a per-row expander -- a worksheet with eighteen
 # visible columns is one nobody fills in correctly.
-WORKSHEET_INLINE_PATIENT = ("patient_id", "specimen_id", "diagnosis")
+# Specimen type and referring clinician are inline rather than behind the
+# expander because they genuinely vary within a batch: a worksheet mixes
+# FFPE blocks with fresh marrow, and specimens arrive from several
+# clinicians. Anything a reader would check DOWN A COLUMN belongs in the
+# grid; the expander is for fields you fill once and rarely re-read.
+WORKSHEET_INLINE_PATIENT = ("patient_id", "specimen_id", "specimen_type",
+                            "diagnosis", "referring_clinician")
 
 
 def worksheet_row_fields():

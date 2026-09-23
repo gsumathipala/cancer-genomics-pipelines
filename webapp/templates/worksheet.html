@@ -113,12 +113,14 @@
       <span class="hint inline">&mdash; the cheapest way to check a whole
       worksheet before committing hours to it.</span></label>
 
-    <p class="hint">Tumour site, clinician and specimen type fill in any row
-      that leaves them blank &mdash; a worksheet is often one tumour type,
-      and setting it once beats setting it twelve times. <strong>Any row
-      can override the site</strong>, which matters because PCGR tiers
-      actionability against it: the same variant can be predictive in one
-      tissue and merely oncogenic in another. Resources left blank
+    <p class="hint">Tumour site, specimen type and referring clinician here
+      are <strong>defaults</strong>: they fill any row that leaves the
+      matching column blank, because a worksheet is often one tumour type
+      arriving from one clinician, and setting that once beats setting it
+      twelve times. Every one of them can be overridden per row &mdash;
+      which matters most for the site, since PCGR tiers actionability
+      against it and the same variant can be predictive in one tissue and
+      merely oncogenic in another. Resources left blank
       (COSMIC, dbSNP, gnomAD, the PCGR bundle) are filled from what is
       installed, exactly as on the single-sample forms.</p>
   </section>
@@ -137,8 +139,10 @@
             <th>Assay</th>
             <th>Patient / MRN</th>
             <th>Specimen ID</th>
+            <th>Specimen type</th>
             <th>Diagnosis</th>
             <th title="Drives PCGR's actionability tiering for this sample">Tumour site</th>
+            <th>Referring clinician</th>
             <th>Read 1</th>
             <th>Read 2</th>
             <th title="Only used by hybrid rows">RNA Read 1</th>
@@ -164,6 +168,8 @@
             </td>
             <td><input name="row-{{ i }}-patient_id" value="{{ row.get('patient_id','') }}" size="10"></td>
             <td><input name="row-{{ i }}-specimen_id" value="{{ row.get('specimen_id','') }}" size="10"></td>
+            <td><input name="row-{{ i }}-specimen_type" value="{{ row.get('specimen_type','') }}"
+                       size="12" placeholder="as above"></td>
             <td><input name="row-{{ i }}-diagnosis" value="{{ row.get('diagnosis','') }}" size="14"></td>
             <td>
               {#- Blank means "use the header's site". Spelled out rather
@@ -179,15 +185,18 @@
                 {% endfor %}
               </select>
             </td>
-            <td><input name="row-{{ i }}-r1" value="{{ row.get('r1','') }}" size="26"></td>
-            <td><input name="row-{{ i }}-r2" value="{{ row.get('r2','') }}" size="26"></td>
+            <td><input name="row-{{ i }}-referring_clinician"
+                       value="{{ row.get('referring_clinician','') }}"
+                       size="14" placeholder="as above"></td>
+            <td><input name="row-{{ i }}-r1" value="{{ row.get('r1','') }}" size="22"></td>
+            <td><input name="row-{{ i }}-r2" value="{{ row.get('r2','') }}" size="22"></td>
             <td><input name="row-{{ i }}-rna_r1" value="{{ row.get('rna_r1','') }}" size="20"></td>
             <td><input name="row-{{ i }}-rna_r2" value="{{ row.get('rna_r2','') }}" size="20"></td>
             <td><button type="button" class="linkish morebtn"
                         data-row="{{ i }}">more</button></td>
           </tr>
           <tr class="morerow" id="more-{{ i }}" hidden>
-            <td colspan="12">
+            <td colspan="14">
               <div class="fields">
                 {% for key, label in patient_fields %}
                   {% if key not in inline_patient %}
