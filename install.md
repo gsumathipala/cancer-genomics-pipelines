@@ -613,12 +613,12 @@ Two caveats the job page will also tell you:
   germline variants inflate it, so treat the figure as internal QC rather than
   a reportable result until a matched normal is available.
 
-**Several samples in one directory: choose what they are.** `--auto-discover`
-on its own treats the first pair as the tumour and the **second as that
-tumour's matched normal**, ignoring the rest — silently. Two patients in one
-directory therefore produce somatic calls on the difference between two
-people, and the report looks entirely ordinary. The webapp refuses that
-outright; it asks you to pick:
+**Several samples in one directory: say what they are.** Which sample is
+the tumour is never taken from the order the files are listed in — it used to
+be, and ordinary names put the normal first (PT01-N before PT01-T), so the
+normal was analysed as the tumour with no error. With more than one sample,
+the command line needs `--tumour-sample` (and `--normal-sample` for a
+matched normal, or `--tumour-only`), and the webapp asks you to pick:
 
 - **Batch** — run every sample found as its own patient. One queued run per
   sample, in turn, each writing to its own subdirectory of the output
@@ -771,7 +771,7 @@ refreshed.
 python3 run_tests.py
 ```
 
-128 checks, about twenty seconds, nothing to install — the suite uses only
+168 checks, about twenty seconds, nothing to install — the suite uses only
 the Python standard library, so it runs before the conda environments
 exist. Tests needing Flask skip themselves and announce the skip rather
 than failing.

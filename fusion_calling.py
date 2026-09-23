@@ -50,7 +50,7 @@ Usage
         --panel illumina-tso500-rna \\
         -i fastqs/ -o rna_results/ \\
         --reference ~/data/references/hg38/hg38.fa \\
-        --gtf ~/data/references/gencode/gencode.v44.annotation.gtf \\
+        --gtf ~/data/references/gencode/gencode.v50.primary_assembly.annotation.gtf \\
         --star-index ~/data/references/star_hg38_150 \\
         --sample TUMOUR_RNA --threads 16
 """
@@ -287,6 +287,56 @@ def find_fastqs(input_dir, r1_pattern, r2_pattern, recursive=False):
         return [], []
     return find_paired_fastqs(input_dir, r1_pattern, r2_pattern,
                               recursive=recursive)
+
+
+def merge_lanes(pair, work_dir, dry_run=False):
+    """
+    One sample's reads, with every lane included: {"r1": ..., "r2": ...}.
+
+    THE FAILURE THIS EXISTS FOR. Discovery reports a lane-split sample with
+    lane 1 in "r1" and every lane in "lanes". This branch used "r1" and
+    nothing else, so a four-lane library was aligned on a quarter of its
+    reads -- and the library QC then blamed the SPECIMEN for being shallow,
+    for depth the pipeline itself had thrown away. The lanes are now
+    concatenated, as the DNA engine always has, with its own helper so the
+    two branches merge identically.
+
+    The merged files are copies of the input and can be large; the caller
+    deletes them when the run ends.
+    """
+    lanes = pair.get("lanes") or []
+    if len(lanes) <= 1:
+        return {"r1": pair["r1"], "r2": pair.get("r2")}, []
+    from comprehensive_variant_calling import concatenate
+    print(f"[INFO] {len(lanes)} lanes found for sample '{pair['sample']}'; "
+          f"merging every lane into one library.")
+    out = {}
+    written = []
+    for read in ("r1", "r2"):
+        parts = [lane[read] for lane in lanes if lane.get(read)]
+        if not parts:
+            out[read] = None
+            continue
+        target = os.path.join(work_dir,
+                              f"{pair['sample']}_merged_{read.upper()}"
+                              f".fastq.gz")
+        if dry_run:
+            print(f"[DRY RUN] Would merge {len(parts)} lanes -> {target}")
+        else:
+            os.makedirs(work_dir, exist_ok=True)
+            concatenate(parts, target)
+            written.append(target)
+        out[read] = target
+    return out, written
+
+
+def remove_quietly(paths):
+    """Delete merged-lane copies at exit, whatever path the run took."""
+    for path in paths:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 # =============================================================================
@@ -540,6 +590,14 @@ def main():
         skip.add("qc")
         print(f"[INFO] Reusing cleaned reads from {args.manifest}; step 1 "
               f"is skipped.")
+        # --sample narrows a multi-sample manifest to one library, exactly
+        # as it narrows auto-discovery below.
+        if args.sample:
+            if args.sample not in samples:
+                print(f"[FATAL] --sample '{args.sample}' is not in "
+                      f"{args.manifest}. Found: {', '.join(sorted(samples))}.")
+                return 1
+            samples = {args.sample: samples[args.sample]}
     elif args.auto_discover:
         if not args.input_dir:
             parser.error("--auto-discover needs --input-dir.")
@@ -552,13 +610,49 @@ def main():
             return 1
         # Every pair is its own sample. There is no tumour/normal pairing
         # on this branch -- a fusion is called from one library -- so the
-        # DNA engine's "first pair is the tumour, second is its normal"
-        # rule, and the danger that comes with it, does not apply here.
-        samples = {p["sample"]: {"r1": p["r1"], "r2": p.get("r2")}
-                   for p in pairs}
-        print(f"[INFO] {len(samples)} sample(s) discovered; each is "
+        # tumour/normal role problem the DNA engine guards against (see its
+        # resolve_roles()) does not arise here.
+        merged_copies = []
+        for pair in pairs:
+            samples[pair["sample"]], written = merge_lanes(
+                pair, os.path.join(output_dir, "lane_merge"), args.dry_run)
+            merged_copies.extend(written)
+        if merged_copies:
+            # atexit rather than a cleanup at each return: main() has
+            # several, and a failed run is exactly when copies get left.
+            import atexit
+            atexit.register(remove_quietly, merged_copies)
+        # --sample narrows discovery to one library. Without it, every
+        # sample in the directory runs -- right for a batch, wrong for a
+        # worksheet row, which is one specimen in a shared folder.
+        if args.sample:
+            if args.sample not in samples:
+                print(f"[FATAL] --sample '{args.sample}' is not among the "
+                      f"libraries in {args.input_dir}. Found: "
+                      f"{', '.join(sorted(samples))}.")
+                return 1
+            samples = {args.sample: samples[args.sample]}
+        print(f"[INFO] {len(samples)} sample(s) to process; each is "
               f"processed independently.")
+
     elif args.sample and args.r1:
+        # One lane of a multi-lane library, given explicitly, would be
+        # analysed alone -- the DNA engine refuses the same thing, with the
+        # same helper, for the same reason.
+        try:
+            from comprehensive_variant_calling import lane_split_owner
+            owner = lane_split_owner(args.r1, args.r1_pattern,
+                                     args.r2_pattern)
+        except ImportError:
+            owner = None
+        if owner:
+            name, lanes = owner
+            parser.error(
+                f"{os.path.basename(args.r1)} is one of {lanes} lanes of "
+                f"sample '{name}'. Given alone it would be analysed alone: "
+                f"1/{lanes} of the reads, and the library QC would then "
+                f"call the specimen shallow. Use --auto-discover, which "
+                f"merges every lane.")
         samples = {args.sample: {"r1": os.path.abspath(args.r1),
                                  "r2": os.path.abspath(args.r2)
                                  if args.r2 else None}}

@@ -9,7 +9,6 @@ to prevent.
 """
 
 import argparse
-import os
 import unittest
 
 from helpers import TempCase, bed, fai, read_text

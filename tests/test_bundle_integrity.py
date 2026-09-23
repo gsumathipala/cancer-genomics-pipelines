@@ -54,7 +54,8 @@ class TestEveryScriptCompiles(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             for path in (list(python_files()) + list(python_files("webapp"))
                          + list(python_files("tests"))
-                         + list(python_files("docs"))):
+                         + list(python_files("docs"))
+                         + list(python_files("validation"))):
                 with self.subTest(module=os.path.basename(path)):
                     # Byte-code goes to scratch: compiling in place would
                     # litter the bundle with __pycache__ directories that
@@ -71,7 +72,8 @@ class TestWatermark(unittest.TestCase):
         pattern = re.compile(r"Created by Brainstorm", re.IGNORECASE)
         for path in (list(python_files()) + list(python_files("webapp"))
                      + list(python_files("tests"))
-                     + list(python_files("docs"))):
+                     + list(python_files("docs"))
+                     + list(python_files("validation"))):
             with self.subTest(module=os.path.relpath(path, ROOT)):
                 with open(path, encoding="utf-8") as fh:
                     head = "".join(fh.readline() for _ in range(6))
@@ -183,7 +185,8 @@ class TestDocumentationPointsAtRealFiles(unittest.TestCase):
                     os.path.exists(os.path.join(ROOT, name))
                     or os.path.exists(os.path.join(ROOT, "webapp", name))
                     or os.path.exists(os.path.join(ROOT, "tests", name))
-                    or os.path.exists(os.path.join(ROOT, "docs", name)),
+                    or os.path.exists(os.path.join(ROOT, "docs", name))
+                    or os.path.exists(os.path.join(ROOT, "validation", name)),
                     f"documentation refers to {name}, which is not here")
 
     def test_research_use_only_is_stated_first(self):

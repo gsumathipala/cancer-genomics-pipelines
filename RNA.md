@@ -59,7 +59,7 @@ python fusion_calling.py \
     --panel illumina-tso500-rna \
     -i fastqs/ -o rna_results/ --auto-discover \
     --reference ~/data/references/hg38/Homo_sapiens_assembly38.fasta \
-    --gtf ~/data/references/gencode/gencode.v44.primary_assembly.annotation.gtf \
+    --gtf ~/data/references/gencode/gencode.v50.primary_assembly.annotation.gtf \
     --star-index ~/data/references/star_hg38_150 \
     --read-length 150 --threads 16
 ```
@@ -149,6 +149,22 @@ quality metric on RNA: an abundant transcript produces identical reads
 legitimately) and DV200/RIN (an instrument measurement that cannot be
 recovered from FASTQ) — so their absence is not read as a pass.
 
+**Depth and mapping need a floor, and without one they are "not judged".**
+What counts as enough reads is assay-specific, so the floors come from the
+RNA panel profile (or `--rna-min-reads-millions` /
+`--rna-min-unique-mapped-pct`), never from a guess here. With no floor,
+those two checks are shown as *not judged* and the verdict will **not**
+certify a negative:
+
+> *The checks that could be judged cleared their bar, but library size and
+> uniquely mapped had no floor to be judged against. An empty fusion table
+> from this library cannot yet be reported as a negative.*
+
+It used to leave the two checks out altogether and then say "every measured
+check cleared its bar — an empty fusion table is a negative result" — for a
+library of any depth. A real run of 0.6 million reads was certified exactly
+so. **Choose an RNA panel profile** for the floors to apply.
+
 **Record the DV200.** The web form has a field for it. It is the best single
 predictor of whether fusion detection could have worked, and no amount of
 computation recovers it.
@@ -213,6 +229,16 @@ Two behaviours worth knowing:
   Unlike the HTML report, which *marks* weak calls, anything passed here
   becomes an entry in a clinical interpretation with no way to show it was
   weak.
+- **PCGR's fusion tiers understate canonical drivers.** Tested with a known
+  EML4::ALK (variant 1) in a specimen with the tumour site set to lung —
+  site 15 reached PCGR, and its own configuration recorded
+  `primary_site: Lung` — PCGR 2.3.2 assigned it **tier 2** ("potential
+  significance") and recorded no primary-site match; BCR::ABL1 likewise.
+  EML4::ALK in NSCLC is the textbook tier-1 finding, with several approved
+  ALK inhibitors. The SNVs in the same report were site-matched and tiered 1
+  normally, so this is how this PCGR version treats fusions, not a wiring
+  fault. Read a fusion's tier as a floor, and interpret canonical driver
+  fusions against current guidelines, not against PCGR's tier alone.
 
 ### The PDF
 

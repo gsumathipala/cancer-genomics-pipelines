@@ -406,6 +406,15 @@ class JobManager:
 
         job = Job(job_id, run_dir, script, argv, patient, meta,
                   pcgr_form=pcgr_form, assay=assay)
+        # Persisted NOW, while it is still only queued. load_existing()
+        # rebuilds the run list from these files and skips a directory
+        # without one, so a job that had not started when the server
+        # restarted used to vanish from the list without trace -- after an
+        # --update, which install.md says to follow with a restart, every
+        # queued worksheet row but the running one disappeared. With the
+        # record written up front it comes back marked "interrupted", which
+        # is the truth, and can be resubmitted.
+        job._write_state()
         with self._lock:
             self._jobs[job_id] = job
             self._order.append(job_id)
@@ -894,10 +903,16 @@ def build_rna_argv(python_exe, script, form):
 
     if form.get("manifest"):
         argv += ["--manifest", form["manifest"]]
+        if form.get("sample"):
+            argv += ["--sample", form["sample"]]
     else:
         argv += ["--input-dir", form["input_dir"]]
         if form.get("auto_discover"):
             argv += ["--auto-discover"]
+            # Narrows discovery to one library -- a worksheet row, or a
+            # lane-split sample run by name so every lane is merged.
+            if form.get("sample"):
+                argv += ["--sample", form["sample"]]
         else:
             argv += ["--sample", form["sample"], "--r1", form["r1"]]
             # Single-end is legitimate here (Ion Torrent), so an absent R2
@@ -960,10 +975,20 @@ def build_rna_pcgr_argv(python_exe, script_dir, manifest, form, output_dir):
     if not samples:
         return None, "no samples recorded in the RNA manifest"
 
-    # One PCGR report per run, from the first sample. A batch of RNA
-    # samples is a batch of specimens, and merging their fusions into one
-    # report would attribute one specimen's finding to another.
-    sample = sorted(samples)[0]
+    # One PCGR report per run, for THE sample the run is about. A batch of
+    # RNA samples is a batch of specimens, and merging their fusions into
+    # one report would attribute one specimen's finding to another -- and
+    # so would picking "the first" of several, which is what this did.
+    # The form now refuses a run that would discover several unnamed
+    # samples, so a named sample or a single one is all that reaches here.
+    if form.get("sample") in samples:
+        sample = form["sample"]
+    elif len(samples) == 1:
+        sample = next(iter(samples))
+    else:
+        return None, (f"{len(samples)} samples in one run and none named, "
+                      f"so no report can be attributed; use the worksheet "
+                      f"for several specimens")
     record = samples[sample]
     fusion_tsv = (record.get("fusion_report") or {}).get("pcgr_tsv")
     if not fusion_tsv or not os.path.exists(fusion_tsv):
@@ -1028,6 +1053,26 @@ def build_rna_pcgr_argv(python_exe, script_dir, manifest, form, output_dir):
     return argv, None
 
 
+def role_args(form):
+    """
+    The tumour/normal names for a run whose FASTQs are found, not given.
+
+    With --auto-discover or --manifest the engine used to be passed no
+    names at all and chose the tumour alphabetically -- which puts PT01-N
+    before PT01-T, and so analysed the normal as the tumour. It now refuses
+    to guess, so the names this app resolved on the form travel with the
+    command.
+    """
+    out = []
+    if form.get("tumour_sample"):
+        out += ["--tumour-sample", form["tumour_sample"]]
+    if form.get("normal_sample"):
+        out += ["--normal-sample", form["normal_sample"]]
+    elif form.get("tumour_only"):
+        out += ["--tumour-only"]
+    return out
+
+
 def build_pipeline_argv(python_exe, script, form):
     """
     Turn the submitted form into a comprehensive_variant_calling.py argv.
@@ -1048,10 +1093,12 @@ def build_pipeline_argv(python_exe, script, form):
 
     if form.get("manifest"):
         argv += ["--manifest", form["manifest"]]
+        argv += role_args(form)
     else:
         argv += ["--input-dir", form["input_dir"]]
         if form.get("auto_discover"):
             argv += ["--auto-discover"]
+            argv += role_args(form)
         else:
             argv += ["--tumour-sample", form["tumour_sample"],
                      "--tumour-r1", form["tumour_r1"],

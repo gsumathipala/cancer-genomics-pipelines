@@ -232,7 +232,7 @@ conda activate cancer_rna
 python fusion_calling.py --panel illumina-tso500-rna \
     -i fastqs/ -o rna_results/ --auto-discover \
     --reference ~/data/references/hg38/Homo_sapiens_assembly38.fasta \
-    --gtf ~/data/references/gencode/gencode.v44.primary_assembly.annotation.gtf \
+    --gtf ~/data/references/gencode/gencode.v50.primary_assembly.annotation.gtf \
     --star-index ~/data/references/star_hg38_150 --threads 16
 ```
 
@@ -347,10 +347,13 @@ panel_profiles.py                 panel profiles: one name configures a run
                                   for its kit's chemistry
 run_tests.py                      the test suite runner — stdlib only,
                                   nothing to install
+validation/                       known-answer runs: planted mutations and
+                                  fusions in simulated reads, and a grader
+                                  that passes a run only if it finds them
 docs/pipeline_overview.svg        the illustration at the top of this file
 docs/make_diagram.py              which generates it from the engines' own
                                   step banners; --check reports drift
-tests/                            128 tests: panel configuration, report
+tests/                            168 tests: panel configuration, report
                                   logic, web routes, command construction,
                                   one per bug that reached this code
 cancer-genomics-pipelines.1             man page
@@ -425,12 +428,18 @@ the manifest travels with the code, so it describes what is actually there.
 python3 run_tests.py
 ```
 
-128 tests, about twenty seconds, nothing to install — the suite uses the
+168 tests, about twenty seconds, nothing to install — the suite uses the
 standard library only, like the analysis scripts. It runs no aligner or
 caller; it tests what this bundle decides, which is the part that is
 actually ours. See [TESTING.md](TESTING.md), particularly on why the
 regression tier matters: every bug it pins produced a clean, plausible,
 wrong report rather than an error.
+
+To check the whole pipeline rather than the code around the tools, run it on
+reads with a known answer: [`validation/`](validation/README.md) plants five
+driver mutations, a deletion and two fusions in simulated reads from real
+hg38, and grades what each run finds. Every pathway passed on 23 September
+2026.
 
 ---
 

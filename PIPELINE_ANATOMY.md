@@ -532,6 +532,20 @@ snpEff -Xmx8g hg38 -noStats -noLog S.cosmic.vcf.gz > S.annotated.vcf
 is too small for hg38 and dies partway through with an `OutOfMemoryError`.
 `-noStats` suppresses the summary HTML (PCGR is the reporting layer here).
 
+**The first annotation is not the clinical transcript.** SnpEff annotates
+*every* overlapping transcript, and the entry it lists first is ranked by
+effect severity, not by clinical convention. Run on a known BRAF V600E, the
+first entry named `p.Val640Glu` — the same variant numbered on a longer
+isoform (`NM_001374258`), which no pathologist would recognise and no
+knowledge-base lookup on that string would find. The clinical numbering is
+in the annotated VCF too, further along the list; and the PCGR report,
+which annotates with VEP against the MANE transcript, says `p.Val600Glu`.
+So: **take protein nomenclature from the PCGR report, never from the first
+`ANN` entry.** Nothing in this pipeline reads `ANN` for that reason.
+Choosing MANE in SnpEff itself needs `-canonList` and a MANE transcript
+list, which the installer does not fetch; plain `-canon` picks the longest
+CDS, which for BRAF is exactly the wrong one.
+
 ---
 
 ### Step 12 — Target coverage
@@ -694,21 +708,31 @@ These reference files **ship inside the conda package** (usually
 step — and why this pipeline locates them explicitly and warns loudly if it
 cannot.
 
-> **A failure worth knowing about, found by running this for real.** STAR
-> counts chimeric reads in its own log, and writes them into the BAM only
-> when `--chimOutType WithinBAM` actually takes effect. **Those two can
-> disagree.** Observed directly on a controlled test: STAR reported 116
-> chimeric reads, `Chimeric.out.junction` contained all 116 at the correct
-> breakpoint — and the BAM contained **zero**. The caller reads only the
-> BAM, so it would have found nothing and exited cleanly: an empty,
-> well-formed fusion table for a specimen that demonstrably carried a
-> fusion, indistinguishable from a true negative.
+> **A failure worth guarding against — and a lesson from getting the
+> guard wrong.** STAR counts chimeric reads in its own log, and writes them
+> into the BAM only when `--chimOutType WithinBAM` takes effect. If those
+> two ever disagreed, the caller — which reads only the BAM — would find
+> nothing and exit cleanly: an empty, well-formed fusion table,
+> indistinguishable from a true negative. So the pipeline **compares the
+> two channels after every alignment** and raises an error naming any
+> discrepancy.
 >
-> So the pipeline now **compares the two channels after every alignment**
-> and raises an error naming the discrepancy. The check streams the BAM
-> and stops at the first chimeric read, so the healthy case costs almost
-> nothing and only a broken one is read in full — which is exactly where
-> you want to spend the time.
+> The first version of that check was itself wrong, and *how* it was wrong
+> is the point. It looked for STAR's `ch:A:1` tag, which STAR writes **only
+> when `--outSAMattributes` asks for it** — and this pipeline never did.
+> So it reported "no chimeric reads in the BAM" on *every* run that had
+> any, and an early test on a synthetic genome was misread as a genuine
+> instance of the failure. It was caught only by running the pipeline on
+> reads with a **known answer**: the check raised its error while Arriba,
+> reading that very BAM, called EML4::ALK and BCR::ABL1 at their exact
+> breakpoints. It now looks for what WithinBAM actually writes —
+> supplementary alignments, flag `0x800` — verified against that real BAM,
+> and still stops at the first one so the healthy case costs almost
+> nothing.
+>
+> **Test a detector on a known positive before you trust its negatives.**
+> A guard that fires on correct results is worse than none: it teaches
+> everyone who reads the log to ignore it.
 >
 > The general lesson: when a tool reports a count in one place and writes
 > data in another, **verify they agree**. Do not assume a flag took
@@ -1241,7 +1265,7 @@ What *is* ours is every decision between those tools — which settings a
 panel profile applies, which file the report step picks up, which flags
 the web interface emits, what a fusion table says about a result. All of
 that is ordinary code, and all of it is testable in seconds. The suite in
-`tests/` runs 128 such checks in about twenty seconds, invokes no aligner,
+`tests/` runs 168 such checks in about twenty seconds, invokes no aligner,
 and uses only the standard library so it can be run before an environment
 exists. See [TESTING.md](TESTING.md).
 

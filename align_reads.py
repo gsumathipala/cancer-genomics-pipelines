@@ -110,10 +110,10 @@ DEBUGGING NOTES (things that surprise people)
     stream and merging would corrupt the BAM.
 
   * MANIFEST MODE: with --manifest, sample names and FASTQ paths come from
-    the QC manifest and --input-dir is not needed (or read). A requested
-    --tumour-sample/--normal-sample that is absent from the manifest falls
-    back to alphabetical order, with a [WARN] -- watch for that line if the
-    wrong sample got treated as the tumour.
+    the QC manifest and --input-dir is not needed (or read). With more
+    than one sample in it, --tumour-sample is required and the normal is
+    only ever the one named with --normal-sample (or --tumour-only); a
+    name absent from the manifest is FATAL. See resolve_roles().
 """
 
 import argparse
@@ -1037,6 +1037,14 @@ def build_parser():
                         help="Read 1 FASTQ for the matched normal.")
     sample.add_argument("--normal-r2", default=None,
                         help="Read 2 FASTQ for the matched normal.")
+    sample.add_argument("--tumour-only", action="store_true",
+                        help="Run without a matched normal even though "
+                             "other samples share the --manifest (a batch). "
+                             "The "
+                             "normal is never inferred, so with other "
+                             "samples present this must be said out loud; "
+                             "naming the tumour with --tumour-sample is "
+                             "still required.")
 
     # --- Alignment options ---
     align = parser.add_argument_group("alignment options")
@@ -1059,6 +1067,91 @@ def build_parser():
                        help="Show commands without executing them.")
     return parser
 
+
+def resolve_roles(available, tumour_name=None, normal_name=None,
+                  source="the input", tumour_only=False):
+    """
+    Decide which sample is the tumour and which the matched normal.
+
+    Returns (tumour_name, normal_name_or_None), or raises ValueError with a
+    message that names every sample actually found.
+
+    THE FAILURE THIS EXISTS FOR. Getting the roles backwards produces no
+    error at all. Mutect2 subtracts the normal from the tumour, so with the
+    specimens swapped every true somatic mutation is present in the "normal"
+    and is filtered out as germline -- and the run finishes cleanly with a
+    short, plausible, WRONG list, for a specimen that may carry an
+    actionable driver. The older rule, "the first sample alphabetically is
+    the tumour", got the commonest naming conventions exactly backwards:
+    PT01-N sorts before PT01-T, "normal" before "tumour", "blood" before
+    "tumor".
+
+    So nothing here is inferred:
+      * a name that was given must exist. It used to warn and fall back to
+        the first sample, which turned a typo into a swapped run;
+      * with more than one sample, the tumour must be named;
+      * the normal is only ever a sample NAMED as the normal. It is never
+        "the other one": two samples in a directory may be two different
+        people, and a normal from someone else calls somatic variants on
+        the difference between two genomes.
+    One sample and no names is the only case left, and it is not a guess:
+    it is a tumour-only run on that sample.
+
+    `tumour_only` is the DECLARED form of the same thing, for a tumour that
+    shares a directory or manifest with other samples (a batch). Declaring
+    it is what makes ignoring the others safe: the normal is then absent
+    because someone said so, not because it was never looked for.
+
+    KEEP IDENTICAL in comprehensive_variant_calling.py and align_reads.py.
+    The scripts are self-contained by design; tests/test_regressions.py
+    checks that the two copies agree on every case.
+    """
+    names = sorted(available)
+    found = ", ".join(names) if names else "none"
+
+    for flag, name in (("--tumour-sample", tumour_name),
+                       ("--normal-sample", normal_name)):
+        if name and name not in available:
+            raise ValueError(
+                f"{flag} '{name}' is not among the samples in {source}. "
+                f"Found: {found}. Sample names are matched exactly.")
+
+    if tumour_only and normal_name:
+        raise ValueError(
+            f"--tumour-only and --normal-sample '{normal_name}' contradict "
+            f"each other. Drop one.")
+
+    if tumour_name and normal_name and tumour_name == normal_name:
+        raise ValueError(
+            f"--tumour-sample and --normal-sample are both '{tumour_name}'. "
+            f"They must be different samples.")
+
+    if not tumour_name:
+        if normal_name:
+            raise ValueError(
+                f"--normal-sample was given without --tumour-sample. Name "
+                f"the tumour as well. Found in {source}: {found}.")
+        if len(names) == 1:
+            return names[0], None
+        raise ValueError(
+            f"{len(names)} samples found in {source} ({found}) and none was "
+            f"named as the tumour. Which one is the tumour is never guessed: "
+            f"getting it backwards filters every real somatic mutation out "
+            f"as germline, and the run still finishes without an error. "
+            f"Name it with --tumour-sample, and the matched normal, if there "
+            f"is one, with --normal-sample.")
+
+    others = [n for n in names if n != tumour_name]
+    if tumour_only:
+        return tumour_name, None
+    if not normal_name and others:
+        raise ValueError(
+            f"--tumour-sample '{tumour_name}' was named, but {source} also "
+            f"holds {', '.join(others)} and no --normal-sample was given. "
+            f"The matched normal is never inferred: two samples may be two "
+            f"different people. Name the normal with --normal-sample, or "
+            f"pass --tumour-only to run this tumour without one.")
+    return tumour_name, normal_name
 
 def validate_args(args, parser):
     """Validate argument combinations that argparse can't catch."""
@@ -1208,39 +1301,24 @@ def main():
             print("[ERROR] No usable samples found in manifest.")
             sys.exit(1)
 
-        # Pick the tumour entry: user-specified name or the first sample.
-        if args.tumour_sample and args.tumour_sample in manifest_samples:
-            tumour = {"name": args.tumour_sample,
-                      "r1": manifest_samples[args.tumour_sample]["r1"],
-                      "r2": manifest_samples[args.tumour_sample]["r2"]}
-        else:
-            first_key = sorted(manifest_samples.keys())[0]
-            if args.tumour_sample:
-                print(f"[WARN] Requested tumour sample "
-                      f"'{args.tumour_sample}' not in manifest; using first "
-                      f"entry '{first_key}' as the tumour.")
-            tumour = {"name": first_key,
-                      "r1": manifest_samples[first_key]["r1"],
-                      "r2": manifest_samples[first_key]["r2"]}
-
+        # Roles are resolved by name, never by position -- see
+        # resolve_roles() for the failure this prevents.
+        try:
+            t_name, n_name = resolve_roles(
+                manifest_samples, args.tumour_sample, args.normal_sample,
+                source=f"the QC manifest {args.manifest}",
+                tumour_only=args.tumour_only)
+        except ValueError as exc:
+            print(f"[FATAL] {exc}")
+            sys.exit(1)
+        tumour = {"name": t_name,
+                  "r1": manifest_samples[t_name]["r1"],
+                  "r2": manifest_samples[t_name]["r2"]}
         normal = None
-        if args.normal_sample and args.normal_sample in manifest_samples:
-            normal = {"name": args.normal_sample,
-                      "r1": manifest_samples[args.normal_sample]["r1"],
-                      "r2": manifest_samples[args.normal_sample]["r2"]}
-        else:
-            if args.normal_sample:
-                print(f"[WARN] Requested normal sample "
-                      f"'{args.normal_sample}' not in manifest "
-                      f"(--normal is auto-picked from the remaining samples).")
-            if len(manifest_samples) >= 2:
-                candidates = [k for k in sorted(manifest_samples.keys())
-                              if k != tumour["name"]]
-                if candidates:
-                    nkey = candidates[0]
-                    normal = {"name": nkey,
-                              "r1": manifest_samples[nkey]["r1"],
-                              "r2": manifest_samples[nkey]["r2"]}
+        if n_name:
+            normal = {"name": n_name,
+                      "r1": manifest_samples[n_name]["r1"],
+                      "r2": manifest_samples[n_name]["r2"]}
 
         print(f"[INFO] Loaded cleaned sample(s) from manifest: "
               f"{args.manifest}")

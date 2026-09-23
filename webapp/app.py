@@ -290,17 +290,17 @@ def apply_panel_to_form(form):
     record, so it states what was added instead of leaving a later reader
     to work it out from a command line.
     """
-    panel_id = form.get("panel")
-    if not panel_id or panel_profiles is None:
-        return []
-    try:
-        profile = panel_profiles.resolve_panel(panel_id, panel_registry())
-    except Exception:                     # noqa: BLE001 - validated in submit
-        return []
-
     # One BED, two fields: the run needs both a calling restriction and a
     # coverage statement, and they are the same file in all but unusual
     # laboratories. Asking for it twice is how one of them ends up empty.
+    #
+    # Done BEFORE looking for a profile, because it does not depend on one.
+    # It used to sit after the "no profile chosen" early return, so a
+    # laboratory running its own panel -- no vendor profile selected --
+    # filled in the panel BED and had it silently dropped: no calling
+    # restriction, no coverage statement ("absent variants cannot be told
+    # apart from unsequenced regions"), no measured TMB denominator. Found
+    # by submitting a real run through the web form.
     applied = []
     decided = []
     bed = form.get("panel_bed") or form.get("intervals") or \
@@ -310,6 +310,14 @@ def apply_panel_to_form(form):
             if not form.get(field):
                 form[field] = bed
                 applied.append(field)
+
+    panel_id = form.get("panel")
+    if not panel_id or panel_profiles is None:
+        return applied
+    try:
+        profile = panel_profiles.resolve_panel(panel_id, panel_registry())
+    except Exception:                     # noqa: BLE001 - validated in submit
+        return applied
 
     for key, value in (profile.get("settings") or {}).items():
         if value is None or key in _PANEL_KEYS_NOT_ON_FORM:
@@ -386,20 +394,26 @@ def default_rna_resources(data=None):
     data = data or app.config["DATA_DIR"]
     found = {}
 
-    gencode = os.path.join(data, "references", "gencode")
-    if os.path.isdir(gencode):
-        # Newest release present. A laboratory that has installed two is
-        # mid-upgrade, and the newer one is what a new run should use --
-        # but the field is editable, because the STAR index decides which
-        # annotation is actually correct for a run.
-        gtfs = sorted(glob.glob(os.path.join(gencode, "*.gtf")))
-        if gtfs:
-            found["gtf"] = gtfs[-1]
+    # Versions and read lengths are compared as NUMBERS. Sorted as text,
+    # "gencode.v9" comes after "gencode.v44" and "star_hg38_75" after
+    # "star_hg38_150", so "the newest" and "the longest" were whichever
+    # happened to sort last.
+    def _number(path, pattern):
+        match = re.search(pattern, os.path.basename(path))
+        return int(match.group(1)) if match else -1
 
-    indexes = sorted(glob.glob(os.path.join(data, "references",
-                                            "star_hg38_*")))
-    indexes = [d for d in indexes
-               if os.path.exists(os.path.join(d, "SAindex"))]
+    indexes = glob.glob(os.path.join(data, "references", "star_hg38_*"))
+    # Complete indexes only -- the same test the alignment step applies.
+    # One sentinel file here and four there let a half-built index be
+    # offered and then rejected.
+    try:
+        from align_rna import index_is_present, read_index_record
+    except ImportError:                      # pragma: no cover
+        index_is_present = (lambda d: os.path.exists(
+            os.path.join(d, "SAindex")))
+        read_index_record = (lambda d: {})
+    indexes = sorted((d for d in indexes if index_is_present(d)),
+                     key=lambda d: _number(d, r"_(\d+)$"))
     if indexes:
         found["star_index"] = indexes[-1]
         # Read length is in the directory name because that is what makes
@@ -408,6 +422,24 @@ def default_rna_resources(data=None):
         tail = os.path.basename(indexes[-1]).rsplit("_", 1)[-1]
         if tail.isdigit():
             found["read_length"] = tail
+
+    # The annotation is the one THE INDEX WAS BUILT WITH, when its build
+    # record says so and the file is still there. It used to be simply the
+    # newest GTF on disk -- so the day a new GENCODE release was downloaded,
+    # every RNA run paired STAR junctions from one release with fusion
+    # annotation from another: "exactly how a real fusion ends up
+    # unannotated", in align_rna's own words. Only with no record does the
+    # newest release fill in.
+    built_with = (read_index_record(found["star_index"]).get("gtf")
+                  if found.get("star_index") else None)
+    gencode = os.path.join(data, "references", "gencode")
+    if built_with and os.path.isfile(built_with):
+        found["gtf"] = built_with
+    elif os.path.isdir(gencode):
+        gtfs = sorted(glob.glob(os.path.join(gencode, "*.gtf")),
+                      key=lambda g: _number(g, r"\.v(\d+)\."))
+        if gtfs:
+            found["gtf"] = gtfs[-1]
 
     reference = os.path.join(data, "references", "hg38",
                              "Homo_sapiens_assembly38.fasta")
@@ -534,6 +566,10 @@ def submit_rna(validate_only=False):
                               "or a manifest is used.")
             if not form.get("r1"):
                 errors.append("Read 1 FASTQ is required.")
+            if form.get("r1"):
+                problem = lane_error(form["r1"], "R1")
+                if problem:
+                    errors.append(problem)
             for field in ("r1", "r2"):
                 if form.get(field):
                     try:
@@ -545,6 +581,40 @@ def submit_rna(validate_only=False):
     if not patient.get("patient_id") and not patient.get("specimen_id"):
         errors.append("Give at least a patient/MRN or a specimen ID, so the "
                       "report can be attributed to something.")
+
+    # One run is one specimen of one patient. Auto-discovery or a manifest
+    # that finds several libraries would otherwise run them ALL under this
+    # patient's name, and report only the alphabetically first to PCGR --
+    # the other specimens' fusions filed against the wrong person. The DNA
+    # form has always refused that; the RNA form never checked.
+    rna_names = None
+    if form.get("auto_discover") and not form.get("manifest") and \
+            not errors and resolved.get("input_dir"):
+        pairs, warns = discover_pairs(resolved["input_dir"],
+                                      bool(form.get("recursive")))
+        errors.extend(f"input scan: {w}" for w in warns)
+        rna_names = [p["sample"] for p in pairs]
+        where = resolved["input_dir"]
+        if not pairs:
+            errors.append(f"Auto-discover found no FASTQ pairs in {where}")
+    elif form.get("manifest") and not errors and resolved.get("manifest"):
+        try:
+            rna_names = sorted(engine().load_qc_manifest(
+                resolved["manifest"]) or {})
+        except Exception as exc:            # noqa: BLE001 - surfaced to UI
+            errors.append(f"QC manifest: could not read it ({exc})")
+        where = "the QC manifest"
+    if rna_names:
+        named = (form.get("sample") or "").strip()
+        if named and named not in rna_names:
+            errors.append(f"Sample '{named}' is not among the libraries in "
+                          f"{where}: {', '.join(rna_names)}.")
+        elif not named and len(rna_names) > 1:
+            errors.append(
+                f"{len(rna_names)} libraries found in {where}: "
+                f"{', '.join(rna_names)}. One run is one specimen: type the "
+                f"one this run is for in 'Sample name', or use the worksheet "
+                f"to run each as its own patient.")
 
     if errors:
         return render_template("new_rna_run.html", errors=errors, form=form,
@@ -696,6 +766,10 @@ def submit_hybrid(validate_only=False):
     dna_form["tumour_r1"] = form.get("dna_r1", "")
     dna_form["tumour_r2"] = form.get("dna_r2", "")
     dna_form["auto_discover"] = form.get("dna_auto_discover", "")
+    # A hybrid kit sequences one specimen, so its DNA half has no matched
+    # normal. Declared, so that auto-discovery in a shared folder resolves
+    # the named sample instead of refusing to guess its normal.
+    dna_form["tumour_only"] = "1"
     if base:
         dna_form["output_dir"] = os.path.join(base, "dna")
 
@@ -929,8 +1003,8 @@ def worksheet_row_to_form(row, shared):
     values["output_dir"] = sample_output_dir(base, row["sample"])
 
     # Never inherit the shared form's auto-discovery: the row names its
-    # files explicitly, and auto-discover would override them and
-    # reintroduce exactly the ambiguity the worksheet exists to remove.
+    # files explicitly. (A row can still be RUN through auto-discovery --
+    # a lane-split sample, below -- but only by name, never by position.)
     for key in ("auto_discover", "batch_mode", "second_is_matched_normal",
                 "manifest"):
         values.pop(key, None)
@@ -962,26 +1036,53 @@ def worksheet_row_to_form(row, shared):
                 return os.path.dirname(os.path.abspath(candidate))
         return ""
 
+    # A row whose R1 is ONE LANE of a lane-split sample is run by name
+    # through auto-discovery, which merges every lane. The scan fills R1
+    # from discovery, which reports lane 1 there; run as an explicit file,
+    # that analysed a quarter of the reads. Naming the sample is also safe
+    # in a shared folder now: the engine resolves it by name and
+    # --tumour-only says the neighbours are not its normal.
+    def _lane_owner(path):
+        if not path:
+            return None
+        try:
+            return engine().lane_split_owner(path)
+        except Exception:                   # noqa: BLE001 - advisory only
+            return None
+
+    r1_owner = _lane_owner(row.get("r1"))
     if assay == "rna":
-        values["sample"] = row["sample"]
-        values["r1"] = row.get("r1", "")
-        values["r2"] = row.get("r2", "")
         values["input_dir"] = _dir_of(row.get("r1"), row.get("r2"))
+        if r1_owner:
+            values["auto_discover"] = "1"
+            values["sample"] = r1_owner[0]
+        else:
+            values["sample"] = row["sample"]
+            values["r1"] = row.get("r1", "")
+            values["r2"] = row.get("r2", "")
     else:
-        values["tumour_sample"] = row["sample"]
-        values["tumour_r1"] = row.get("r1", "")
-        values["tumour_r2"] = row.get("r2", "")
         values["input_dir"] = _dir_of(row.get("r1"), row.get("r2"))
+        if r1_owner:
+            values["auto_discover"] = "1"
+            values["tumour_sample"] = r1_owner[0]
+            values["tumour_only"] = "1"
+        else:
+            values["tumour_sample"] = row["sample"]
+            values["tumour_r1"] = row.get("r1", "")
+            values["tumour_r2"] = row.get("r2", "")
 
     # A hybrid row carries two libraries: R1/R2 are the DNA pair, and the
     # RNA pair has its own columns.
     if assay == "hybrid":
-        values["dna_sample"] = row["sample"]
-        values["dna_r1"] = row.get("r1", "")
-        values["dna_r2"] = row.get("r2", "")
-        values["rna_sample"] = row["sample"]
-        values["rna_r1"] = row.get("rna_r1", "")
-        values["rna_r2"] = row.get("rna_r2", "")
+        rna_owner = _lane_owner(row.get("rna_r1"))
+        values["dna_sample"] = r1_owner[0] if r1_owner else row["sample"]
+        values["dna_auto_discover"] = "1" if r1_owner else ""
+        values["dna_r1"] = "" if r1_owner else row.get("r1", "")
+        values["dna_r2"] = "" if r1_owner else row.get("r2", "")
+        values["rna_sample"] = rna_owner[0] if rna_owner else row["sample"]
+        values["rna_auto_discover"] = "1" if rna_owner else ""
+        values["rna_r1"] = "" if rna_owner else row.get("rna_r1", "")
+        values["rna_r2"] = "" if rna_owner else row.get("rna_r2", "")
         # Each half resolves its own files, which may sit in different
         # folders -- a hybrid kit's DNA and RNA libraries frequently do.
         values["dna_input_dir"] = _dir_of(row.get("r1"), row.get("r2"))
@@ -1540,6 +1641,12 @@ def submit(validate_only=False):
             # set that skipped safe_path(): a value outside --allow-root was
             # forwarded to the pipeline, and a typo was only discovered when
             # the run failed minutes later. Both are caught here now.
+            for field, label in (("tumour_r1", "Tumour R1"),
+                                 ("normal_r1", "Normal R1")):
+                if form.get(field):
+                    problem = lane_error(form[field], label)
+                    if problem:
+                        errors.append(problem)
             for field in ("tumour_r1", "tumour_r2",
                           "normal_r1", "normal_r2"):
                 if form.get(field):
@@ -1606,34 +1713,90 @@ def submit(validate_only=False):
 
     # Resolve auto-discover here rather than letting the pipeline do it. See
     # discover_pairs() for why an ambiguous auto-discover is dangerous.
+    #
+    # Roles are resolved BY NAME, with the engine's own resolve_roles(), and
+    # the names travel with the command (jobs.role_args). This used to pass
+    # --auto-discover with no names and let the engine take the tumour as
+    # the alphabetically first sample -- the usual naming (PT01-N, PT01-T)
+    # then analysed the normal as the tumour, with no error.
     batch_pairs = []
+    role_override = {}
+    tumour_named = (form.get("tumour_sample") or "").strip()
+    normal_named = (form.get("normal_sample") or "").strip()
     if form.get("auto_discover") and not form.get("manifest") and \
             not errors and resolved.get("input_dir"):
         pairs, warns = discover_pairs(resolved["input_dir"],
                                       bool(form.get("recursive")))
         for w in warns:
             errors.append(f"input scan: {w}")
+        names = [p["sample"] for p in pairs]
         if not pairs:
             errors.append("Auto-discover found no FASTQ pairs in "
                           f"{resolved['input_dir']}")
-        elif len(pairs) == 1:
-            pass                       # unambiguous: one tumour-only sample
         elif form.get("batch_mode"):
             batch_pairs = pairs        # one run per sample, queued in turn
         elif form.get("second_is_matched_normal"):
             if len(pairs) != 2:
                 errors.append(
-                    f"'Second sample is the matched normal' needs exactly two "
-                    f"FASTQ pairs, but {len(pairs)} were found: "
-                    f"{', '.join(p['sample'] for p in pairs)}.")
-        else:
+                    f"'The two samples are a tumour/normal pair' needs "
+                    f"exactly two FASTQ pairs, but {len(pairs)} were found: "
+                    f"{', '.join(names)}.")
+            elif tumour_named not in names:
+                errors.append(
+                    f"Two samples were found: {names[0]} and {names[1]}. "
+                    f"Type the TUMOUR's name in 'Tumour sample' and the "
+                    f"other is used as the matched normal. It is not taken "
+                    f"from the order they are listed in: that order is "
+                    f"alphabetical, and ordinary names put the normal first "
+                    f"(PT01-N before PT01-T), which would analyse the normal "
+                    f"as the tumour.")
+            else:
+                role_override = {
+                    "tumour_sample": tumour_named,
+                    "normal_sample": next(n for n in names
+                                          if n != tumour_named)}
+        elif len(pairs) > 1 and not tumour_named:
             errors.append(
                 f"{len(pairs)} samples found in {resolved['input_dir']}: "
-                f"{', '.join(p['sample'] for p in pairs)}. Choose 'Batch' to "
-                f"run each as its own patient, or tick 'second sample is the "
-                f"matched normal' if these are a tumour/normal pair from ONE "
-                f"person. Running them unmarked would call somatic variants "
-                f"on the difference between two people.")
+                f"{', '.join(names)}. Choose 'Batch' to "
+                f"run each as its own patient, or tick 'the two samples are "
+                f"a tumour/normal pair' and name the tumour, if these are "
+                f"from ONE person. Running them unmarked would call somatic "
+                f"variants on the difference between two people.")
+        else:
+            try:
+                tumour, normal = engine().resolve_roles(
+                    set(names), tumour_named or None, normal_named or None,
+                    source=resolved["input_dir"],
+                    tumour_only=bool(form.get("tumour_only")))
+                role_override = {"tumour_sample": tumour,
+                                 "normal_sample": normal or ""}
+            except ValueError as exc:
+                errors.append(str(exc))
+
+    # A QC manifest is checked the same way: which sample is the tumour is
+    # decided here, where a mistake is a message on the form, rather than
+    # by the engine an hour into the queue.
+    if form.get("manifest") and not errors and resolved.get("manifest"):
+        try:
+            samples = engine().load_qc_manifest(resolved["manifest"])
+        except Exception as exc:            # noqa: BLE001 - surfaced to UI
+            samples = None
+            errors.append(f"QC manifest: could not read it ({exc})")
+        if samples is not None:
+            if not samples:
+                errors.append("QC manifest: no usable samples in it -- all "
+                              "failed QC or have missing outputs.")
+            else:
+                try:
+                    tumour, normal = engine().resolve_roles(
+                        samples, tumour_named or None, normal_named or None,
+                        source="the QC manifest",
+                        tumour_only=bool(form.get("tumour_only")))
+                    role_override = {"tumour_sample": tumour,
+                                     "normal_sample": normal or ""}
+                except ValueError as exc:
+                    errors.append(f"QC manifest: {exc}")
 
     if errors:
         return render_template("new_run.html", errors=errors, form=form,
@@ -1652,6 +1815,7 @@ def submit(validate_only=False):
 
     merged = dict(form)
     merged.update(resolved)
+    merged.update(role_override)
     merged["auto_applied_resources"] = " ".join(auto_applied)
     # Same reasoning as auto_applied_resources: a run record that shows a
     # dozen settings without saying where they came from leaves a later
@@ -1687,12 +1851,17 @@ def submit(validate_only=False):
         for pair in batch_pairs:
             per = dict(merged)
             per["output_dir"] = sample_output_dir(base_out, pair["sample"])
+            # By NAME, with auto-discover kept on. This used to copy
+            # pair["r1"] into an explicit --tumour-r1, which for a
+            # lane-split sample is LANE 1 ONLY: each batch run analysed a
+            # quarter of its reads. The engine resolves the name and merges
+            # every lane; --tumour-only says out loud that the other
+            # samples in the folder are not this one's normal.
             per["tumour_sample"] = pair["sample"]
-            per["tumour_r1"] = pair["r1"]
-            per["tumour_r2"] = pair["r2"]
-            # Explicit samples, so auto-discover must not also be passed --
-            # it would override them and reintroduce the ambiguity.
-            per.pop("auto_discover", None)
+            per["tumour_only"] = "1"
+            for stale in ("tumour_r1", "tumour_r2", "normal_sample",
+                          "normal_r1", "normal_r2"):
+                per.pop(stale, None)
             per["batch_of"] = str(len(batch_pairs))
             per["batch_base"] = base_out
 
@@ -1718,16 +1887,58 @@ def submit(validate_only=False):
 # ---------------------------------------------------------------------------
 # Sample discovery and batch submission
 # ---------------------------------------------------------------------------
-# --auto-discover assigns the FIRST pair it finds as the tumour and the
-# SECOND as that tumour's matched normal, then ignores the rest, and says
-# nothing about any of it. Point it at a directory holding several patients
-# and it calls somatic variants on the genetic difference between two
-# unrelated people: their differing germline variants are reported as
-# somatic, their shared real mutations are subtracted, and the output looks
-# entirely ordinary. PCGR will then tier it and produce a confident report.
+# --auto-discover used to assign the FIRST pair it found as the tumour and
+# the SECOND as its matched normal. Ordinary names put the normal first, so
+# the normal was analysed as the tumour; and a directory of several
+# patients produced somatic calls on the difference between two people.
+# The engine now refuses to guess (resolve_roles), and this app resolves
+# the roles by name on the form so a mistake is a message, not a run.
 #
 # The webapp therefore never submits an ambiguous auto-discover run. It
-# resolves the samples itself and passes them explicitly.
+# resolves the samples itself and passes their NAMES with the command.
+
+
+_ENGINE = None
+
+
+def engine():
+    """
+    The DNA engine, loaded once, so the checks on the form are the
+    engine's own: which files make a pair, what counts as a lane, and how
+    tumour and normal are assigned. A second implementation here would
+    drift, and the two would then disagree about a specimen.
+    """
+    global _ENGINE
+    if _ENGINE is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_cvc_engine",
+                                                      SCRIPT_VARIANT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _ENGINE = module
+    return _ENGINE
+
+
+def lane_error(path, label):
+    """
+    A form error when `path` is one lane of a multi-lane sample, else None.
+
+    Given as an explicit file it would be analysed alone -- a fraction of
+    the reads and of the depth, and no error anywhere. The engine refuses
+    it too; saying so here puts the message on the form, before anything
+    is queued.
+    """
+    try:
+        owner = engine().lane_split_owner(path)
+    except Exception:                       # noqa: BLE001 - advisory only
+        return None
+    if not owner:
+        return None
+    sample, lanes = owner
+    return (f"{label}: {os.path.basename(path)} is one of {lanes} lanes of "
+            f"sample '{sample}'. On its own it would be analysed on 1/"
+            f"{lanes} of the reads. Tick 'Auto-discover' and type "
+            f"'{sample}' as the sample name, which merges every lane.")
 
 
 def discover_pairs(input_dir, recursive=False):
@@ -1740,12 +1951,7 @@ def discover_pairs(input_dir, recursive=False):
     drift. Returns (pairs, warnings); pairs is empty on any failure.
     """
     try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "_cvc_discovery", SCRIPT_VARIANT)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module.find_paired_fastqs(
+        return engine().find_paired_fastqs(
             input_dir, "*_R1_*.fastq*", "*_R2_*.fastq*",
             recursive=recursive)
     except Exception as exc:                # noqa: BLE001 - surfaced to UI

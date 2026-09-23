@@ -72,7 +72,7 @@ Usage
     python rna_qc_report.py --sample-id S1 \\
         --star-log rna_out/rna_aligned/S1.Log.final.out \\
         --bam rna_out/rna_aligned/S1.sorted.bam \\
-        --gtf ~/data/references/gencode/gencode.v44.annotation.gtf \\
+        --gtf ~/data/references/gencode/gencode.v50.primary_assembly.annotation.gtf \\
         --output-dir rna_out/rna_qc
 """
 
@@ -296,6 +296,21 @@ def evaluate(measured, thresholds):
         checks.append({"name": name, "state": "pass" if ok else "concern",
                        "detail": detail})
 
+    def unjudged(name, detail):
+        # Measured, but with no bar to measure it against. Stated rather
+        # than dropped: see the comment below.
+        checks.append({"name": name, "state": "unassessed",
+                       "detail": detail})
+
+    # Depth and mapping rate are the two checks that most decide whether an
+    # empty table means "no fusion" -- and their floors are assay-specific,
+    # so they come from the panel profile or the operator, never from a
+    # guess here. When neither supplied one, these checks used to be LEFT
+    # OUT, and the verdict then read "every measured check cleared its bar
+    # ... an empty fusion table is a negative result" for a library of any
+    # depth at all: 0.6 million reads was certified. They are now always
+    # present, as "not judged" when there is no floor, and the verdict
+    # refuses to call a negative on a library whose depth was not judged.
     reads_m = measured.get("input_reads_millions")
     floor_m = thresholds.get("min_reads_millions")
     if reads_m is not None and floor_m:
@@ -304,6 +319,12 @@ def evaluate(measured, thresholds):
             f"this assay. Below it, a fusion present at low abundance may "
             f"simply not have been sampled, so an empty result is not a "
             f"negative.")
+    elif reads_m is not None:
+        unjudged("Library size",
+                 f"{reads_m:.1f} M reads, but no floor is set for this "
+                 f"assay (choose an RNA panel profile, or set "
+                 f"--rna-min-reads-millions), so whether that is enough to "
+                 f"have sampled a low-abundance fusion cannot be judged.")
 
     unique = measured.get("uniquely_mapped_pct")
     floor_u = thresholds.get("min_unique_mapped_pct")
@@ -312,6 +333,11 @@ def evaluate(measured, thresholds):
             f"{unique:.1f}% against a floor of {floor_u:.1f}%. A low rate "
             f"on RNA usually means degradation, contamination, or an index "
             f"built from the wrong annotation.")
+    elif unique is not None:
+        unjudged("Uniquely mapped",
+                 f"{unique:.1f}%, but no floor is set for this assay "
+                 f"(choose an RNA panel profile, or set "
+                 f"--rna-min-unique-mapped-pct), so it cannot be judged.")
 
     too_short = measured.get("too_short_pct")
     if too_short is not None:
@@ -362,6 +388,14 @@ def evaluate(measured, thresholds):
     return checks
 
 
+# How each check state is shown, shared by this report and the web PDF.
+CHECK_MARKS = {
+    "pass": ("#1a7f37", "pass"),
+    "concern": ("#b7791f", "look at this"),
+    "unassessed": ("#57606a", "not judged"),
+}
+
+
 def verdict(checks):
     """One line saying whether a negative from this library is reportable."""
     concerns = [c for c in checks if c["state"] == "concern"]
@@ -371,6 +405,16 @@ def verdict(checks):
                         "statement about library quality. Treat an empty "
                         "fusion table as uninterpreted rather than as a "
                         "negative."}
+    unjudged = [c for c in checks if c["state"] == "unassessed"]
+    if not concerns and unjudged:
+        return {"state": "partial",
+                "text": "The checks that could be judged cleared their "
+                        "bar, but " + " and ".join(
+                            c["name"].lower() for c in unjudged) +
+                        " had no floor to be judged against. An empty "
+                        "fusion table from this library cannot yet be "
+                        "reported as a negative: set the floors for this "
+                        "assay (an RNA panel profile carries them)."}
     if not concerns:
         return {"state": "ok",
                 "text": "Every measured check cleared its bar. An empty "
@@ -399,7 +443,7 @@ def write_html(path, metrics, context):
         return html.escape(str(value))
 
     state = metrics["verdict"]["state"]
-    colour = {"ok": "#1a7f37", "concern": "#b7791f",
+    colour = {"ok": "#1a7f37", "concern": "#b7791f", "partial": "#57606a",
               "unknown": "#57606a"}.get(state, "#57606a")
 
     rows = []
@@ -412,8 +456,7 @@ def write_html(path, metrics, context):
 
     checks = []
     for check in metrics["checks"]:
-        tint = "#1a7f37" if check["state"] == "pass" else "#b7791f"
-        mark = "pass" if check["state"] == "pass" else "look at this"
+        tint, mark = CHECK_MARKS.get(check["state"], CHECK_MARKS["concern"])
         checks.append(
             f"<tr><td><strong>{esc(check['name'])}</strong></td>"
             f"<td style='color:{tint};white-space:nowrap'>{esc(mark)}</td>"

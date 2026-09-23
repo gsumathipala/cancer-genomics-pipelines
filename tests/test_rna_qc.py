@@ -7,7 +7,6 @@ that is indistinguishable from a true negative. These tests pin the checks
 that tell the two apart.
 """
 
-import json
 import unittest
 
 from helpers import TempCase, read_text, star_log

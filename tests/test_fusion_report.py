@@ -8,8 +8,6 @@ reordering here is the whole point of the module, so it is what these tests
 pin down.
 """
 
-import json
-import os
 import unittest
 
 from helpers import ARRIBA_HEADER, TempCase, arriba_row, read_json, read_text

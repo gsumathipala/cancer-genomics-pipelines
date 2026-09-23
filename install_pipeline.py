@@ -763,6 +763,42 @@ def step_gencode(args):
     return True
 
 
+def star_index_annotation(index_dir):
+    """
+    The GTF a STAR index was built from, per its build record, or None.
+
+    align_rna.py writes that record (pipeline_index.json) at build time;
+    read here without importing it, so the installer keeps no dependency
+    on the pipeline's modules.
+    """
+    try:
+        with open(os.path.join(index_dir, "pipeline_index.json"),
+                  encoding="utf-8") as fh:
+            return (json.load(fh) or {}).get("gtf")
+    except (OSError, ValueError):
+        return None
+
+
+def annotation_mismatch(index_dir, gtf):
+    """
+    A one-line description when the index was built from another GTF.
+
+    Found on a real machine: the default release moved from v44 to v50,
+    the v50 GTF was downloaded, the step saw the index's sentinel and
+    skipped -- and --check reported both green. Runs stay consistent (the
+    web form offers the index's own annotation), but the installer should
+    not claim a matched pair it never compared.
+    """
+    built = star_index_annotation(index_dir)
+    if built and os.path.basename(built) != os.path.basename(gtf):
+        return (f"the STAR index was built from {os.path.basename(built)}, "
+                f"not the current {os.path.basename(gtf)}. Runs use the "
+                f"index's own annotation, so they are consistent; to move "
+                f"to the new release, rebuild it (about an hour, ~32 GB "
+                f"RAM): install_pipeline.py --only star-index --force")
+    return None
+
+
 def step_star_index(args):
     """
     The STAR index: about an hour of CPU, ~32 GB of RAM, ~30 GB of disk.
@@ -789,6 +825,9 @@ def step_star_index(args):
     sentinel = os.path.join(index, "SAindex")
     if os.path.exists(sentinel) and not args.force:
         LOG.skip(f"STAR index present ({index})")
+        mismatch = annotation_mismatch(index, gtf)
+        if mismatch:
+            LOG.warn(mismatch)
         return True
 
     script = os.path.join(args.repo, "align_rna.py")
@@ -1513,6 +1552,10 @@ def step_verify(args):
                 LOG.ok(f"  {label}")
             else:
                 LOG.warn(f"  {label} missing -- install it with {hint}")
+        if os.path.exists(index):
+            mismatch = annotation_mismatch(os.path.dirname(index), gtf)
+            if mismatch:
+                LOG.warn(f"  {mismatch}")
     else:
         LOG.info("RNA branch not installed (--with-rna adds it; needed only "
                  "for fusion detection from RNA panels)")

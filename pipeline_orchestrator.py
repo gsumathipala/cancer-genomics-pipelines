@@ -59,8 +59,11 @@ THE HANDOFF MECHANISM
 
 Usage Examples
 --------------
-  # Full 3-stage pipeline (QC -> align -> variant call) with COSMIC:
+  # Full 3-stage pipeline (QC -> align -> variant call) with COSMIC.
+  # With a tumour AND its matched normal in raw_fastqs/, name both: which
+  # is which is never taken from file order.
   python pipeline_orchestrator.py \\
+      --tumour-sample PT01-T --normal-sample PT01-N \\
       --stage1-args "-i raw_fastqs/ -o qc_out/ --threads 16" \\
       --stage2-args "-o aligned_out/ --reference hg38 --threads 16 --two-pass" \\
       --stage3-args "-o results/ --reference hg38 \\
@@ -333,6 +336,22 @@ def main():
                         "ignored with a warning under --assay rna.")
 
     # --- Runtime ---
+    # ---- Which sample is which: a property of the RUN, not of a stage ----
+    sr = parser.add_argument_group(
+        "samples (given once, forwarded to every stage that runs)")
+    sr.add_argument("--tumour-sample", default=None, metavar="NAME",
+                    help="The tumour's sample name. Required whenever the "
+                         "input holds more than one sample: the tumour is "
+                         "never taken from file order (PT01-N sorts "
+                         "before PT01-T). For --assay rna, the library to "
+                         "run.")
+    sr.add_argument("--normal-sample", default=None, metavar="NAME",
+                    help="The matched normal's sample name. Never inferred "
+                         "from the other samples present.")
+    sr.add_argument("--tumour-only", action="store_true",
+                    help="Run the named tumour without a matched normal "
+                         "even though other samples are present.")
+
     r = parser.add_argument_group("runtime")
     r.add_argument("--dry-run", action="store_true",
                    help="Print the commands without running them.")
@@ -372,6 +391,67 @@ def main():
                   "discard exactly the reads a fusion is evidenced by. The "
                   "RNA engine aligns with STAR itself.")
         args.skip_stage2 = True
+
+    # ---- Push the sample roles into every stage that runs ----
+    # Stage 2 and stage 3 each resolve tumour and normal for themselves.
+    # Given names in only one of them -- which is how this had to be done
+    # before these options existed -- the other either guessed (the old
+    # engines, alphabetically, getting PT01-N/PT01-T backwards) or now
+    # refuses. So the names are given once and forwarded; names given only
+    # in --stage3-args are copied to stage 2 so the two cannot disagree;
+    # and names given BOTH ways are refused rather than settled by string
+    # order.
+    top = []
+    if args.tumour_sample:
+        top += ["--tumour-sample", args.tumour_sample]
+    if args.normal_sample:
+        top += ["--normal-sample", args.normal_sample]
+    if args.tumour_only:
+        top += ["--tumour-only"]
+    role_flags = ("--tumour-sample", "--normal-sample", "--tumour-only",
+                  "--sample")
+
+    if args.assay == "rna":
+        if args.normal_sample or args.tumour_only:
+            parser.error("--normal-sample and --tumour-only are DNA options: "
+                         "an RNA fusion run has no matched normal. Use "
+                         "--tumour-sample to choose the library.")
+        top = ["--sample", args.tumour_sample] if args.tumour_sample else []
+        stages = ("stage3_args",)
+    else:
+        stages = ("stage2_args", "stage3_args")
+
+    if top:
+        for attr in stages:
+            current = getattr(args, attr) or ""
+            if not current.strip():
+                continue
+            named = [f for f in role_flags
+                     if has_option(shlex.split(current), (f,))]
+            if named:
+                parser.error(
+                    f"--{attr.replace('_', '-')} already names "
+                    f"{', '.join(named)}, and the orchestrator was given "
+                    f"sample names as well. Give them once, with the "
+                    f"orchestrator's own --tumour-sample/--normal-sample, "
+                    f"so every stage agrees.")
+            setattr(args, attr, f"{current} {shlex.join(top)}")
+    elif args.assay != "rna" and (args.stage2_args or "").strip() and \
+            not args.skip_stage2:
+        # Names given the old way, in stage 3 only: copy them to stage 2.
+        v3 = shlex.split(args.stage3_args or "")
+        v2 = shlex.split(args.stage2_args)
+        copied = []
+        for flag in ("--tumour-sample", "--normal-sample"):
+            value = extract_arg(args.stage3_args or "", (flag,))
+            if value and not has_option(v2, (flag,)):
+                copied += [flag, value]
+        if "--tumour-only" in v3 and "--tumour-only" not in v2:
+            copied += ["--tumour-only"]
+        if copied:
+            args.stage2_args = f"{args.stage2_args} {shlex.join(copied)}"
+            print(f"[INFO] stage 2 given the sample names from stage 3 "
+                  f"({shlex.join(copied)}) so both stages agree.")
 
     if args.panel_bed:
         if args.assay == "rna":

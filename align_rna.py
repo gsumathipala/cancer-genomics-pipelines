@@ -56,7 +56,7 @@ Usage
     # Build an index once (about an hour, ~32 GB RAM, ~30 GB disk):
     python align_rna.py --build-index \\
         --reference ~/data/references/hg38/hg38.fa \\
-        --gtf ~/data/references/gencode/gencode.v44.annotation.gtf \\
+        --gtf ~/data/references/gencode/gencode.v50.primary_assembly.annotation.gtf \\
         --read-length 151 --star-index ~/data/references/star_hg38_150
 
     # Align:
@@ -430,22 +430,35 @@ def bam_has_chimeric_alignments(bam):
     """
     Does this BAM actually contain chimeric alignments?
 
-    Streams the BAM and stops at the FIRST read carrying STAR's ch:A:1
-    attribute, so the healthy case costs almost nothing. Only a BAM with
-    none is read in full -- which is exactly the case worth spending time
-    on.
+    WHAT IT LOOKS FOR. With --chimOutType WithinBAM, STAR writes each
+    chimeric alignment as a primary record plus a SUPPLEMENTARY one (flag
+    0x800) linked by SA tags -- which is exactly what Arriba reads. STAR
+    emits supplementary records for nothing else, so their presence is the
+    test.
+
+    WHAT IT USED TO LOOK FOR, AND WHY THAT WAS WRONG. STAR's ch:A:1 tag.
+    STAR writes `ch` only when --outSAMattributes asks for it, and this
+    pipeline never did, so the tag was absent from every BAM ever made
+    here. The check therefore reported "no chimeric alignments in the BAM"
+    on EVERY run that had any -- found when a real run on simulated reads
+    raised the error while Arriba, reading that same BAM, called
+    EML4::ALK and BCR::ABL1 at their exact breakpoints. A guard that fires
+    on correct results trains people to ignore it.
+
+    Streams `samtools view -f 2048` and stops at the first record, so the
+    healthy case costs almost nothing.
 
     Returns True / False, or None when it could not be determined.
     """
     if not bam or not os.path.exists(bam) or shutil.which("samtools") is None:
         return None
     try:
-        view = subprocess.Popen(["samtools", "view", bam],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        view = subprocess.Popen(["samtools", "view", "-f", "2048", bam],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL)
         try:
-            for raw in view.stdout:
-                if b"ch:A:1" in raw:
-                    return True
+            for _record in view.stdout:
+                return True
             return False
         finally:
             view.stdout.close()
@@ -467,9 +480,13 @@ def verify_chimeric_output(result, stats):
 
     The result is an empty, well-formed fusion table for a specimen that
     may well carry a fusion. Indistinguishable, in every downstream
-    artefact, from a true negative. Observed directly: STAR reporting 116
-    chimeric reads and writing 0 into the BAM, while
-    Chimeric.out.junction held all 116.
+    artefact, from a true negative.
+
+    (An earlier version of this docstring reported observing exactly that:
+    116 chimeric reads counted, 0 in the BAM. That observation came from a
+    broken detector -- see bam_has_chimeric_alignments() -- and should not
+    be relied on. The failure mode remains possible, which is why the two
+    channels are still compared; it has not been demonstrated here.)
 
     So the two channels are compared, and a disagreement is an ERROR with
     an explanation, not a silent empty table.

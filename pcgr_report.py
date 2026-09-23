@@ -52,9 +52,12 @@ REQUIREMENTS (none of which this module installs for you)
   standard-library-only, so PCGR's own Python runs it happily:
       conda activate pcgr && python pcgr_report.py ...
 
-  If `pcgr` is not on PATH this module reports "skipped" rather than
-  failing, matching how the pipeline treats SnpEff and bcftools: PCGR is
-  enrichment, not a load-bearing stage.
+  When `pcgr` is not on PATH -- the normal case, since the pipeline runs
+  in its own environment -- this module finds the 'pcgr' conda
+  environment and runs PCGR activated in it, which is what step 13 of the
+  command-line pipeline relies on. Only when no such environment exists
+  does it report "skipped" rather than failing, matching how the pipeline
+  treats SnpEff and bcftools: PCGR is enrichment, not a load-bearing stage.
 
 INPUT SELECTION (why not the SnpEff VCF?)
 ------------------------------------------
@@ -149,7 +152,7 @@ GENOME_CHOICES = ("grch38", "grch37")
 # Duplicated from the other pipeline scripts on purpose: every script in
 # this directory is runnable on its own, without importing its siblings.
 
-def run_command(cmd, tag, log_path=None, dry_run=False):
+def run_command(cmd, tag, log_path=None, dry_run=False, env=None):
     """
     Execute a command, streaming output to the console and optional log.
 
@@ -176,6 +179,7 @@ def run_command(cmd, tag, log_path=None, dry_run=False):
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env=env,
         )
         for line in proc.stdout:
             line = line.rstrip("\n")
@@ -750,6 +754,49 @@ def find_reports(output_dir, sample_id):
 # SECTION 3: THE STEP ITSELF
 # =============================================================================
 
+def locate_pcgr_env(name="pcgr"):
+    """
+    PCGR's conda environment directory, or None.
+
+    Searched the way webapp/jobs.py's find_conda_env() searches -- sibling
+    of the running env, then the usual conda roots -- and kept separate
+    from it because this module must stay importable on its own.
+    """
+    here = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+    candidates = []
+    if os.path.basename(os.path.dirname(here)) == "envs":
+        candidates.append(os.path.join(os.path.dirname(here), name))
+    candidates.append(os.path.join(here, "envs", name))
+    for root in (os.environ.get("CONDA_ROOT"),
+                 os.path.expanduser("~/miniconda3"),
+                 os.path.expanduser("~/anaconda3"),
+                 os.path.expanduser("~/miniforge3")):
+        if root:
+            candidates.append(os.path.join(root, "envs", name))
+    for path in candidates:
+        if os.path.isfile(os.path.join(path, "bin", name)):
+            return path
+    return None
+
+
+def pcgr_environment(env_dir):
+    """
+    An os.environ copy equivalent to "conda activate <env_dir>".
+
+    CONDA_PREFIX is the part that matters: PCGR finds its VEP plugins from
+    it, which is why putting pcgr's bin/ on PATH alone fails with "No
+    ensembl-vep directories found". Mirrors webapp/jobs.py activated_env().
+    """
+    env = dict(os.environ)
+    env["PATH"] = os.path.join(env_dir, "bin") + os.pathsep + \
+        env.get("PATH", "")
+    env["CONDA_PREFIX"] = env_dir
+    env["CONDA_DEFAULT_ENV"] = os.path.basename(env_dir)
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
+    return env
+
+
 def run_pcgr(input_vcf, output_dir, sample_id, refdata_dir, vep_dir=None,
              genome_assembly="grch38", assay="TARGETED", tumour_site=None,
              effective_target_size_mb=None, estimate_tmb=False,
@@ -779,13 +826,24 @@ def run_pcgr(input_vcf, output_dir, sample_id, refdata_dir, vep_dir=None,
     # --- Preconditions. Each of these is a "skip", not a failure: PCGR is
     # --- an optional enrichment step and a missing bundle should not sink
     # --- an otherwise good variant-calling run.
+    # PCGR lives in its own conda environment, and the pipeline runs in
+    # another. When `pcgr` is not on PATH, find that environment and run
+    # PCGR ACTIVATED in it. Before this, step 13 of the command-line
+    # pipeline could never produce a report on a standard install -- the
+    # installer always puts PCGR in its own env -- and said only
+    # "skipping", so --pcgr-refdata-dir quietly did nothing. The web
+    # interface had always done this; now the command line does too.
+    pcgr_env = None
     if shutil.which("pcgr") is None:
-        print("[WARN] 'pcgr' not found on PATH; skipping PCGR report.")
-        print("       PCGR lives in its own conda environment and is not on")
-        print("       bioconda. If it is installed, activate that env first:")
-        print("           conda activate pcgr && python pcgr_report.py ...")
-        print("       Putting pcgr's bin/ on PATH is NOT sufficient.")
-        return None
+        pcgr_env = locate_pcgr_env()
+        if pcgr_env is None:
+            print("[WARN] 'pcgr' is not on PATH and no 'pcgr' conda "
+                  "environment was found; skipping PCGR report.")
+            print("       PCGR lives in its own conda environment and is not "
+                  "on bioconda.")
+            print("       install_pipeline.py creates it; see install.md.")
+            return None
+        print(f"[INFO] Running PCGR from its own environment: {pcgr_env}")
 
     if not refdata_dir:
         print("[WARN] No PCGR reference bundle given (--pcgr-refdata-dir); "
@@ -896,8 +954,12 @@ def run_pcgr(input_vcf, output_dir, sample_id, refdata_dir, vep_dir=None,
               "over unfiltered calls and will read high. Treat TMB and MSI "
               "as indicative only. See pcgr_report.py's module docstring.")
 
+    run_env = None
+    if pcgr_env:
+        cmd = [os.path.join(pcgr_env, "bin", "pcgr")] + cmd[1:]
+        run_env = pcgr_environment(pcgr_env)
     code = run_command(cmd, tag=f"PCGR [{sample_id}]",
-                       log_path=log_path, dry_run=dry_run)
+                       log_path=log_path, dry_run=dry_run, env=run_env)
     if code != 0:
         print(f"[WARN] PCGR failed (exit {code}).")
         return False

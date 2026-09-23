@@ -130,11 +130,16 @@ ONCOGENICITY = [
 # The silent-failure guards. These are the reason the pipeline is shaped
 # the way it is, so they belong on the diagram rather than in a footnote.
 GUARDS = [
+    ("Tumour and normal are never guessed",
+     "With several samples the tumour must be named, and the normal is "
+     "only ever one that was named. Taken from file order, PT01-N was "
+     "analysed as the tumour: every true mutation filtered as germline, "
+     "and no error."),
     ("Chimeric output verified",
-     "STAR's own chimeric count is compared against the ch:A:1 tags in the "
-     "BAM. They can disagree - 116 reported, 0 written - and the fusion "
-     "caller reads only the BAM, so it exits cleanly with an empty table "
-     "that looks exactly like a true negative."),
+     "STAR's chimeric count is compared with the supplementary "
+     "alignments in the BAM. The fusion caller reads only the BAM, so if "
+     "they disagreed it would exit cleanly with an empty table that looks "
+     "exactly like a true negative."),
     ("Coverage before conclusions",
      "Step 12 states which target regions reached the depth threshold. "
      "Without it, 'no mutation detected' silently covers regions that were "
@@ -347,6 +352,8 @@ def build():
                    bound=rna_x + rna_w - 10)
         gy += box_h + 10
 
+    guards_bottom = gy - 10
+
     # ---- PCGR stages ---------------------------------------------------
     py = top
     st_h = 58
@@ -407,17 +414,27 @@ def build():
     channel_x = rna_x + rna_w + 62
     stage2_y = top + (st_h + 8) + st_h / 2
 
+    # The DNA feed has to cross the RNA column. If the guard boxes reach
+    # down past step 13 it runs underneath them rather than through them:
+    # a line drawn across a box reads as belonging to it.
     dna13_y = top + 12 * (step_h + gap) + step_h / 2
-    s.line(dna_x + dna_w, dna13_y, channel_x, dna13_y, PCGR_EDGE, 2.2)
-    s.text((rna_x + rna_w + channel_x) / 2, dna13_y - 9, "filtered VCF",
-           size=11, fill=PCGR_DARK, anchor="middle")
+    route_y = max(dna13_y, guards_bottom + 18)
+    gutter_x = dna_x + dna_w + 13
+    if route_y > dna13_y:
+        s.line(dna_x + dna_w, dna13_y, gutter_x, dna13_y, PCGR_EDGE, 2.2)
+        s.line(gutter_x, dna13_y, gutter_x, route_y, PCGR_EDGE, 2.2)
+        s.line(gutter_x, route_y, channel_x, route_y, PCGR_EDGE, 2.2)
+    else:
+        s.line(dna_x + dna_w, dna13_y, channel_x, dna13_y, PCGR_EDGE, 2.2)
+    s.text(rna_x + 8, route_y - 7, "filtered VCF", size=11,
+           fill=PCGR_DARK)
 
     rna6_y = top + 5 * (step_h + gap) + step_h / 2
     s.line(rna_x + rna_w, rna6_y, channel_x, rna6_y, PCGR_EDGE, 2.2)
     s.text((rna_x + rna_w + channel_x) / 2, rna6_y - 9, "fusion TSV",
            size=11, fill=PCGR_DARK, anchor="middle")
 
-    s.line(channel_x, dna13_y, channel_x, stage2_y, PCGR_EDGE, 2.2)
+    s.line(channel_x, route_y, channel_x, stage2_y, PCGR_EDGE, 2.2)
     s.arrow(channel_x, stage2_y, pcgr_x - 3, stage2_y, PCGR_EDGE, 2.2)
 
     # ---- outputs -------------------------------------------------------

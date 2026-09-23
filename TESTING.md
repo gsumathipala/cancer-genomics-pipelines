@@ -58,10 +58,26 @@ expensive failure is the one that produces a clean, well-formed, entirely
 plausible report that is wrong — and every bug in that module was one of
 those:
 
-- STAR counted 116 chimeric reads and wrote none of them into the BAM. The
-  fusion caller reads only the BAM, found nothing, and exited zero. The
-  output was an empty fusion table, indistinguishable from a true negative
-  for a specimen that may well have carried a fusion.
+- With several samples in a folder, the tumour was taken to be whichever
+  sorted first. Ordinary names put the normal first (PT01-N before
+  PT01-T), so the **normal was analysed as the tumour**: Mutect2 found
+  every real somatic mutation in the "normal" and filtered it out as
+  germline, and the run finished without an error.
+- A lane-split sample was analysed on **lane 1 only** by the web
+  interface's batch mode, its worksheet and the RNA engine: a quarter of
+  the reads and the depth, with no error — and on the RNA side a library
+  QC that then blamed the specimen for being shallow.
+- The web form's **panel BED was dropped** unless a vendor profile was also
+  chosen: a laboratory's own panel got genome-wide calling, no coverage
+  statement, and a TMB computed over an assumed 34 Mb exome.
+- RNA library QC **certified any library as negative-capable** when no
+  depth floor was set: the two checks that decide it were silently left
+  out, and 0.6 million reads was called fine.
+- An RNA run could hold **several specimens under one patient**, with only
+  the alphabetically first sent to PCGR.
+- The RNA form offered the **newest annotation rather than the index's
+  own**, pairing STAR junctions from GENCODE v44 with fusion annotation
+  from v50.
 - The report step looked for the COSMIC-annotated VCF by name and gave up
   when it was absent, reporting "no VCF on disk" while the filtered calls
   sat beside it.
@@ -78,6 +94,18 @@ those:
 None of these would have failed a run. All of them would have produced a
 report. That is why they are each pinned by name.
 
+The first two were found by running the whole pipeline on simulated reads
+with a **known answer** — five planted driver mutations and a deletion for
+DNA, EML4::ALK and BCR::ABL1 for RNA — and comparing what came out. That
+same exercise showed that one of this module's earlier entries was itself
+wrong. A guard meant to catch STAR counting chimeric reads without writing
+them into the BAM looked for a tag STAR never wrote in this configuration,
+so it raised a false error on every run with any chimeric reads — and an
+early synthetic test had been misread as the real failure. Its test had
+mocked the detector, so it never met a real BAM. It is now tested against
+real `samtools` output. Test a detector on a known positive before
+trusting its negatives.
+
 One bug in that module is of a different kind and is marked as such: a
 finished job held its subprocess pipe open. The manager deliberately keeps
 every `Job` for the life of the server so finished runs stay listable, so
@@ -85,6 +113,20 @@ each completed run also kept a file descriptor — a server working through
 a long worksheet accumulated them until it ran out. It reports no wrong
 answer; it degrades a long-lived server, and it is invisible until the
 limit is hit, at which point it presents as something else entirely.
+
+## Known-answer validation
+
+The suite tests decisions; it cannot test GATK or STAR. For that there is
+[`validation/`](validation/README.md): simulated reads from real hg38 with
+known driver mutations and fusions planted at exact allele fractions, and a
+grader, `check_truth.py`, that passes a run only if it finds exactly what
+was planted. Every pathway — web, command line, orchestrator, hybrid and
+worksheet, DNA and RNA — was run through it on 23 September 2026 and
+passed, and running it is how most of the defects above were found.
+
+Run it after anything that changes a tool version, a reference, or a step.
+It takes about an hour of machine time for every pathway and needs the
+installed reference data, which is why it is not part of `run_tests.py`.
 
 ## Leaked file handles fail the run
 

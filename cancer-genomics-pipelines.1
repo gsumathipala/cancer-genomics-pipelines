@@ -147,9 +147,13 @@ step is automatically skipped.
 .RB ( comprehensive_variant_calling.py
 only): find R1/R2 pairs in
 .I INPUT_DIR
-by glob pattern. The first pair becomes the tumour, the second the normal,
-and any further pairs are ignored. Use it only on a directory holding ONE
-patient \(em see
+by glob pattern. Which pair is the tumour is decided BY NAME, never by the
+order the files are listed in: with more than one pair,
+.B \-\-tumour\-sample
+is required, and the matched normal is only ever a sample named with
+.BR \-\-normal\-sample .
+A lane\-split sample contributes every lane.
+See
 .B CAVEATS .
 .IP 3. 4
 Explicit
@@ -478,10 +482,14 @@ used by
 .B \-\-auto\-discover
 Discover FASTQ pairs in
 .I INPUT_DIR
-by pattern instead of naming them explicitly. The first pair is the tumour, the
-second the normal, and any further pairs are silently ignored.
-.B This is safe only when the directory holds one patient.
-See
+by pattern instead of naming them explicitly. With more than one pair the tumour
+must be named with
+.BR \-\-tumour\-sample ;
+the normal is only ever one named with
+.BR \-\-normal\-sample ,
+or the run is declared
+.BR \-\-tumour\-only .
+Nothing is taken from file order. See
 .B CAVEATS .
 .TP
 .B \-\-merge\-lanes
@@ -1456,14 +1464,15 @@ a failure that does not stop the run, and
 .B [FATAL]
 a failure that does.
 .PP
-Two warnings are worth watching for. When a
+A
 .B \-\-tumour\-sample
 or
 .B \-\-normal\-sample
-name is not present in the manifest, the tools fall back to alphabetical order
-and emit a
-.BR [WARN] :
-without it you may silently analyse the wrong sample as the tumour. When
+name that is not present in the manifest or the input directory is a
+.BR [FATAL] ,
+listing the samples that were found. It used to be a warning followed by a
+fall\-back to alphabetical order, which turned a typing mistake into a run
+with the tumour and normal swapped. When
 lane\-split files are detected but
 .B \-\-merge\-lanes
 was not given,
@@ -1473,7 +1482,7 @@ warns that each lane is being processed as a separate sample.
 .SH TESTING
 .PP
 .B python3 run_tests.py
-runs the bundle's own test suite: 128 checks, about twenty seconds,
+runs the bundle's own test suite: 168 checks, about twenty seconds,
 nothing to install. It uses only the Python standard library, so it can be
 run before the analysis environment has been built. Tests that need Flask
 skip themselves and say so.
@@ -1656,23 +1665,22 @@ nor
 is on by default, because guessing a target region or a depth cutoff for
 someone else's assay would be worse than doing nothing.
 .TP
-.B \-\-auto\-discover assumes ONE patient per directory
-The first pair found becomes the tumour and the second becomes that tumour's
-MATCHED NORMAL; anything after is ignored. Nothing warns about either. Point
-it at a directory holding two patients and Mutect2 subtracts one person's
-genome from another's: their differing germline variants are reported as
-somatic, their shared real mutations vanish, and the output looks entirely
-ordinary \(em a clinical reporter will tier it without complaint. Give each
-patient its own directory, or name the samples explicitly with
+.B Tumour and normal are never taken from file order
+They used to be: with
+.BR \-\-auto\-discover ,
+the first pair found became the tumour and the second its matched normal.
+Ordinary names put the normal first (PT01\-N before PT01\-T), so the normal
+was analysed as the tumour \(em every real somatic mutation filtered out as
+germline, and no error. Now, with more than one sample, the tumour must be
+named with
 .BR \-\-tumour\-sample ,
-.BR \-\-tumour\-r1 ,
-.BR \-\-tumour\-r2 ,
-and use
+and the matched normal is only ever one named with
 .B \-\-normal\-sample
-only for a genuine matched normal from the SAME person. The
-.B webapp/
-front end refuses an ambiguous directory outright and offers a batch mode
-instead; this command does not.
+\(em never inferred, because two samples in a directory may be two different
+people, and a normal from someone else calls somatic variants on the
+difference between two genomes. To run a tumour without its neighbours as a
+normal, say so with
+.BR \-\-tumour\-only .
 .TP
 .B Large insertions are usually artefacts, not variants
 An insertion that reverse\-complement matches its own flanking reference is a
@@ -1694,6 +1702,20 @@ count approaches or exceeds the SNV count, suspect artefacts before biology
 which removes them by mechanism and costs no SNVs, rather than
 .BR \-\-min\-allele\-fraction ,
 which is type\-blind and pays for indel cleanup with SNV sensitivity.
+.TP
+.B Take protein changes from the PCGR report, not from SnpEff's first entry
+SnpEff lists every overlapping transcript, ordered by effect severity, so
+its first
+.B ANN
+entry can be a non\-clinical isoform: a known BRAF V600E was first
+annotated as p.Val640Glu. The PCGR report annotates against MANE and says
+p.Val600Glu.
+.TP
+.B PCGR 2.3.2 tiers fusions without a site match
+With the tumour site set to lung, a known EML4::ALK was assigned tier 2,
+with no primary\-site match recorded, while the SNVs in the same report were
+site\-matched to tier 1. Treat a fusion's tier as a floor and interpret
+canonical driver fusions against current guidelines.
 .TP
 .B COSMIC and reference builds must match
 COSMIC VCFs are build\-specific. Annotating hg38 calls with an hg19 COSMIC file

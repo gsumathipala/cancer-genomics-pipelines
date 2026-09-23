@@ -189,7 +189,8 @@ def build_rna_report(run, patient, output_dir, pdf_path):
             doc.table(
                 ["Check", "Result", "What it means"],
                 [[c["name"],
-                  "pass" if c["state"] == "pass" else "look at this",
+                  {"pass": "pass", "unassessed": "not judged"}.get(
+                      c["state"], "look at this"),
                   c["detail"]] for c in checks],
                 widths=[1.1, 0.8, 4.0])
 

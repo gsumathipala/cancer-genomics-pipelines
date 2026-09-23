@@ -233,13 +233,15 @@ TARGETED PANELS NEED --intervals
 
 DEBUGGING NOTES (things that surprise people)
 ---------------------------------------------
-  * --auto-discover ASSUMES ONE PATIENT PER DIRECTORY. The first pair
-    found becomes the tumour; the SECOND becomes that tumour's matched
-    normal; anything after is ignored. Nothing warns about any of it.
-    Two patients in one directory therefore produce a somatic call set
-    that is the difference between two people -- germline variants where
-    they differ reported as somatic, shared real mutations subtracted --
-    and the output looks entirely ordinary. Give each patient its own
+  * TUMOUR AND NORMAL ARE NEVER TAKEN FROM FILE ORDER. They used to be:
+    --auto-discover made the first pair the tumour and the second its
+    matched normal. Ordinary names put the normal first (PT01-N before
+    PT01-T), so the normal was analysed as the tumour -- every real
+    somatic mutation filtered out as germline, and no error. With more
+    than one sample, name the tumour (--tumour-sample) and the normal
+    (--normal-sample), or declare --tumour-only; see resolve_roles().
+    Two patients in one directory would otherwise produce a somatic call
+    set that is the difference between two people. Give each patient its own
     directory, or name the samples explicitly and use --normal-sample
     only for a genuine matched normal from the same person. The webapp
     refuses an ambiguous directory and offers a batch mode; this script,
@@ -2909,6 +2911,35 @@ def derive_tokens(r1_pattern, r2_pattern):
     return t1, t2
 
 
+def lane_split_owner(r1_path, r1_pattern="*_R1_*.fastq*",
+                     r2_pattern="*_R2_*.fastq*"):
+    """
+    (sample, lane_count) when r1_path is ONE lane of a multi-lane sample.
+
+    None when the file stands alone. Uses find_paired_fastqs() itself, so
+    "what is a lane" can never mean two different things in two places.
+
+    THE FAILURE THIS EXISTS FOR. Discovery reports a lane-split sample with
+    its first lane in "r1" and every lane in "lanes". Anything that copied
+    "r1" into an explicit --tumour-r1 -- the web interface's batch mode and
+    its worksheet scan both did -- analysed lane 1 of 4: a quarter of the
+    reads, a quarter of the depth, low-fraction variants lost, and no error
+    anywhere. The explicit mode now refuses such a file outright.
+    """
+    target = os.path.abspath(r1_path)
+    try:
+        pairs, _warnings = find_paired_fastqs(os.path.dirname(target),
+                                              r1_pattern, r2_pattern)
+    except Exception:                       # noqa: BLE001 - advisory only
+        return None
+    for pair in pairs:
+        lanes = pair.get("lanes") or []
+        if len(lanes) > 1 and any(os.path.abspath(lane["r1"]) == target
+                                  for lane in lanes):
+            return pair["sample"], len(lanes)
+    return None
+
+
 def find_paired_fastqs(input_dir, r1_pattern, r2_pattern, recursive=False):
     """
     Discover R1/R2 FASTQ pairs in the input directory.
@@ -3306,8 +3337,10 @@ def build_parser():
     sample = parser.add_argument_group("sample specification")
     sample.add_argument("--tumour-sample", default=None,
                         help="Sample name for the tumour. Required in the "
-                             "explicit-input mode; optional with "
-                             "--manifest/--auto-discover (auto-picked).")
+                             "explicit-input mode, and with --manifest or "
+                             "--auto-discover whenever more than one sample "
+                             "is found: which sample is the tumour is never "
+                             "guessed.")
     sample.add_argument("--tumour-r1", default=None,
                         help="Read 1 FASTQ for the tumour. Required in the "
                              "explicit-input mode only.")
@@ -3315,11 +3348,22 @@ def build_parser():
                         help="Read 2 FASTQ for the tumour. Required in the "
                              "explicit-input mode only.")
     sample.add_argument("--normal-sample", default=None,
-                        help="Sample name for the matched normal.")
+                        help="Sample name for the matched normal. With "
+                             "--manifest or --auto-discover the name alone "
+                             "is enough. The normal is never inferred from "
+                             "the other samples present.")
     sample.add_argument("--normal-r1", default=None,
                         help="Read 1 FASTQ for the matched normal.")
     sample.add_argument("--normal-r2", default=None,
                         help="Read 2 FASTQ for the matched normal.")
+    sample.add_argument("--tumour-only", action="store_true",
+                        help="Run without a matched normal even though "
+                             "other samples share the --manifest or "
+                             "--auto-discover directory (a batch). The "
+                             "normal is never inferred, so with other "
+                             "samples present this must be said out loud; "
+                             "naming the tumour with --tumour-sample is "
+                             "still required.")
 
     # --- FASTQ patterns ---
     fq = parser.add_argument_group("FASTQ patterns")
@@ -3338,12 +3382,11 @@ def build_parser():
     fq.add_argument("--auto-discover", action="store_true",
                     help="Auto-discover FASTQ pairs from input-dir "
                          "(overrides --tumour-r1/r2 and --normal-r1/r2). "
-                         "ASSUMES ONE PATIENT PER DIRECTORY: the first pair "
-                         "found is the tumour, the second is treated as its "
-                         "MATCHED NORMAL, and any others are ignored -- all "
-                         "silently. Two patients in one directory yields "
-                         "somatic calls on the difference between two "
-                         "people. Use one directory per patient.")
+                         "Lane-split samples contribute every lane. With "
+                         "more than one pair, name the tumour with "
+                         "--tumour-sample and the matched normal with "
+                         "--normal-sample (or declare --tumour-only): "
+                         "neither is ever taken from file order.")
 
     # --- Panel / assay profile ---
     # Everything below this line used to have to be set flag by flag, from
@@ -4034,15 +4077,115 @@ def save_panel_profile(args, record, explicit=frozenset()):
           f"--panel-file {path} --panel {profile['id']}.")
 
 
+def resolve_roles(available, tumour_name=None, normal_name=None,
+                  source="the input", tumour_only=False):
+    """
+    Decide which sample is the tumour and which the matched normal.
+
+    Returns (tumour_name, normal_name_or_None), or raises ValueError with a
+    message that names every sample actually found.
+
+    THE FAILURE THIS EXISTS FOR. Getting the roles backwards produces no
+    error at all. Mutect2 subtracts the normal from the tumour, so with the
+    specimens swapped every true somatic mutation is present in the "normal"
+    and is filtered out as germline -- and the run finishes cleanly with a
+    short, plausible, WRONG list, for a specimen that may carry an
+    actionable driver. The older rule, "the first sample alphabetically is
+    the tumour", got the commonest naming conventions exactly backwards:
+    PT01-N sorts before PT01-T, "normal" before "tumour", "blood" before
+    "tumor".
+
+    So nothing here is inferred:
+      * a name that was given must exist. It used to warn and fall back to
+        the first sample, which turned a typo into a swapped run;
+      * with more than one sample, the tumour must be named;
+      * the normal is only ever a sample NAMED as the normal. It is never
+        "the other one": two samples in a directory may be two different
+        people, and a normal from someone else calls somatic variants on
+        the difference between two genomes.
+    One sample and no names is the only case left, and it is not a guess:
+    it is a tumour-only run on that sample.
+
+    `tumour_only` is the DECLARED form of the same thing, for a tumour that
+    shares a directory or manifest with other samples (a batch). Declaring
+    it is what makes ignoring the others safe: the normal is then absent
+    because someone said so, not because it was never looked for.
+
+    KEEP IDENTICAL in comprehensive_variant_calling.py and align_reads.py.
+    The scripts are self-contained by design; tests/test_regressions.py
+    checks that the two copies agree on every case.
+    """
+    names = sorted(available)
+    found = ", ".join(names) if names else "none"
+
+    for flag, name in (("--tumour-sample", tumour_name),
+                       ("--normal-sample", normal_name)):
+        if name and name not in available:
+            raise ValueError(
+                f"{flag} '{name}' is not among the samples in {source}. "
+                f"Found: {found}. Sample names are matched exactly.")
+
+    if tumour_only and normal_name:
+        raise ValueError(
+            f"--tumour-only and --normal-sample '{normal_name}' contradict "
+            f"each other. Drop one.")
+
+    if tumour_name and normal_name and tumour_name == normal_name:
+        raise ValueError(
+            f"--tumour-sample and --normal-sample are both '{tumour_name}'. "
+            f"They must be different samples.")
+
+    if not tumour_name:
+        if normal_name:
+            raise ValueError(
+                f"--normal-sample was given without --tumour-sample. Name "
+                f"the tumour as well. Found in {source}: {found}.")
+        if len(names) == 1:
+            return names[0], None
+        raise ValueError(
+            f"{len(names)} samples found in {source} ({found}) and none was "
+            f"named as the tumour. Which one is the tumour is never guessed: "
+            f"getting it backwards filters every real somatic mutation out "
+            f"as germline, and the run still finishes without an error. "
+            f"Name it with --tumour-sample, and the matched normal, if there "
+            f"is one, with --normal-sample.")
+
+    others = [n for n in names if n != tumour_name]
+    if tumour_only:
+        return tumour_name, None
+    if not normal_name and others:
+        raise ValueError(
+            f"--tumour-sample '{tumour_name}' was named, but {source} also "
+            f"holds {', '.join(others)} and no --normal-sample was given. "
+            f"The matched normal is never inferred: two samples may be two "
+            f"different people. Name the normal with --normal-sample, or "
+            f"pass --tumour-only to run this tumour without one.")
+    return tumour_name, normal_name
+
 def validate_args(args, parser):
     """Validate argument combinations that argparse can't catch."""
     if args.threads < 1:
         parser.error("--threads must be >= 1.")
 
-    # Normal requires all three normal args.
-    if bool(args.normal_sample) != bool(args.normal_r1 and args.normal_r2):
-        parser.error("If --normal-sample is provided, you must also provide "
-                     "--normal-r1 and --normal-r2 (and vice versa).")
+    # A declared tumour-only run with a normal named is a contradiction;
+    # refusing it beats silently honouring whichever was meant less.
+    if args.tumour_only and (args.normal_sample or args.normal_r1 or
+                             args.normal_r2):
+        parser.error("--tumour-only was given together with a matched "
+                     "normal. Drop one of them.")
+
+    # Normal requires all three normal args -- in the EXPLICIT mode only.
+    # With --manifest or --auto-discover the FASTQs come from the manifest
+    # or the directory, and --normal-sample on its own is how the normal is
+    # named. Demanding --normal-r1/r2 there made the normal impossible to
+    # name at all, which left its role to be guessed.
+    if not args.manifest and not args.auto_discover:
+        if bool(args.normal_sample) != bool(args.normal_r1 and
+                                            args.normal_r2):
+            parser.error("If --normal-sample is provided, you must also "
+                         "provide --normal-r1 and --normal-r2 (and vice "
+                         "versa), or use --auto-discover or --manifest, "
+                         "where the sample name alone is enough.")
 
     # UMI length is only meaningful when the UMI sits INSIDE a read: for
     # index1/index2/per_index the whole index read is the UMI, so fastp
@@ -4102,6 +4245,24 @@ def validate_args(args, parser):
                     setattr(args, role, candidate)
                 else:
                     parser.error(f"FASTQ not found: {val} (also tried {candidate})")
+
+        # One lane of a multi-lane sample, given explicitly, would be
+        # analysed alone -- see lane_split_owner(). Refused, with the way
+        # to include every lane.
+        for role in ("tumour_r1", "normal_r1"):
+            path = getattr(args, role)
+            owner = lane_split_owner(path, args.r1_pattern,
+                                     args.r2_pattern) if path else None
+            if owner:
+                sample_name, lanes = owner
+                flag = "--tumour-sample" if role == "tumour_r1" \
+                    else "--normal-sample"
+                parser.error(
+                    f"{os.path.basename(path)} is one of {lanes} lanes of "
+                    f"sample '{sample_name}'. Given alone it would be "
+                    f"analysed alone: 1/{lanes} of the reads and of the "
+                    f"depth, with no error. Use --auto-discover "
+                    f"{flag} {sample_name}, which merges every lane.")
 
     # Validate COSMIC path.
     if args.cosmic and not os.path.isfile(args.cosmic):
@@ -4215,41 +4376,24 @@ def main():
                   "either failed QC or have missing outputs.")
             sys.exit(1)
 
-        # Match tumour by user-provided sample name; otherwise take the
-        # first manifest entry as tumour and the second as normal.
-        if args.tumour_sample and args.tumour_sample in manifest_samples:
-            tumour = {"name": args.tumour_sample,
-                      "r1": manifest_samples[args.tumour_sample]["r1"],
-                      "r2": manifest_samples[args.tumour_sample]["r2"]}
-        else:
-            first_key = sorted(manifest_samples.keys())[0]
-            if args.tumour_sample:
-                print(f"[WARN] Requested tumour sample "
-                      f"'{args.tumour_sample}' not in manifest; using first "
-                      f"entry '{first_key}' as the tumour.")
-            tumour = {"name": first_key,
-                      "r1": manifest_samples[first_key]["r1"],
-                      "r2": manifest_samples[first_key]["r2"]}
-
+        # Roles are resolved by name, never by position -- see
+        # resolve_roles() for the failure this prevents.
+        try:
+            t_name, n_name = resolve_roles(
+                manifest_samples, args.tumour_sample, args.normal_sample,
+                source=f"the QC manifest {args.manifest}",
+                tumour_only=args.tumour_only)
+        except ValueError as exc:
+            print(f"[FATAL] {exc}")
+            sys.exit(1)
+        tumour = {"name": t_name,
+                  "r1": manifest_samples[t_name]["r1"],
+                  "r2": manifest_samples[t_name]["r2"]}
         normal = None
-        if args.normal_sample and args.normal_sample in manifest_samples:
-            normal = {"name": args.normal_sample,
-                      "r1": manifest_samples[args.normal_sample]["r1"],
-                      "r2": manifest_samples[args.normal_sample]["r2"]}
-        else:
-            if args.normal_sample:
-                print(f"[WARN] Requested normal sample "
-                      f"'{args.normal_sample}' not in manifest "
-                      f"(--normal is auto-picked from the remaining samples).")
-            if len(manifest_samples) >= 2:
-                # Take the next sample as the normal (skip the tumour's key).
-                candidates = [k for k in sorted(manifest_samples.keys())
-                              if k != tumour["name"]]
-                if candidates:
-                    nkey = candidates[0]
-                    normal = {"name": nkey,
-                              "r1": manifest_samples[nkey]["r1"],
-                              "r2": manifest_samples[nkey]["r2"]}
+        if n_name:
+            normal = {"name": n_name,
+                      "r1": manifest_samples[n_name]["r1"],
+                      "r2": manifest_samples[n_name]["r2"]}
 
         # IMPORTANT: QC was already run by fastq_qc_clean.py. The manifest
         # points at the cleaned reads, so the "qc" step MUST be skipped.
@@ -4301,13 +4445,32 @@ def main():
                 return r1_merge, r2_merge
             return pair["r1"], pair["r2"]
 
-        # Assign the first pair as tumour, second as normal.
-        t_r1, t_r2 = resolve_lanes(pairs[0], "tumour")
-        tumour = {"name": pairs[0]["sample"], "r1": t_r1, "r2": t_r2}
+        # Roles by NAME. This used to read "assign the first pair as
+        # tumour, second as normal" and ignored --tumour-sample entirely,
+        # so PT01-N / PT01-T analysed the normal as the tumour. See
+        # resolve_roles().
+        by_name = {}
+        for pair in pairs:
+            if pair["sample"] in by_name:
+                print(f"[FATAL] sample '{pair['sample']}' was found more "
+                      f"than once under {args.input_dir} (--recursive?). "
+                      f"Give the FASTQs explicitly with --tumour-r1/r2.")
+                sys.exit(1)
+            by_name[pair["sample"]] = pair
+        try:
+            t_name, n_name = resolve_roles(
+                by_name, args.tumour_sample, args.normal_sample,
+                source=args.input_dir,
+                tumour_only=args.tumour_only)
+        except ValueError as exc:
+            print(f"[FATAL] {exc}")
+            sys.exit(1)
+        t_r1, t_r2 = resolve_lanes(by_name[t_name], "tumour")
+        tumour = {"name": t_name, "r1": t_r1, "r2": t_r2}
         normal = None
-        if len(pairs) > 1:
-            n_r1, n_r2 = resolve_lanes(pairs[1], "normal")
-            normal = {"name": pairs[1]["sample"], "r1": n_r1, "r2": n_r2}
+        if n_name:
+            n_r1, n_r2 = resolve_lanes(by_name[n_name], "normal")
+            normal = {"name": n_name, "r1": n_r1, "r2": n_r2}
     else:
         tumour = {
             "name": args.tumour_sample,
@@ -5144,7 +5307,16 @@ def main():
     else:
         # Two distinct reasons; say which.
         if not args.pcgr_refdata_dir:
-            print("[SKIP] PCGR skipped (--pcgr-refdata-dir not provided).")
+            # Worded for both ways this happens. The web interface never
+            # passes --pcgr-refdata-dir here: it runs PCGR as its own step
+            # AFTER this pipeline, in PCGR's environment. A bare "PCGR
+            # skipped" in that run's log read as "there is no clinical
+            # report" while the run page was showing one.
+            print("[SKIP] PCGR not run inside this pipeline "
+                  "(--pcgr-refdata-dir not given). The web interface runs "
+                  "it as a separate step once this finishes -- see the run "
+                  "page for its status. From the command line, pass "
+                  "--pcgr-refdata-dir to have step 13 run it.")
         else:
             print("[SKIP] PCGR skipped (--skip-steps pcgr).")
 
